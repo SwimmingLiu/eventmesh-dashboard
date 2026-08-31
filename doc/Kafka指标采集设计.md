@@ -333,7 +333,7 @@ mvn -pl eventmesh-dashboard-core,eventmesh-dashboard-console \
   -am -Dcheckstyle.skip=true test
 ```
 
-默认测试会编译并执行现有单元测试，包括 ReportController 查询、IoTDB module 路由、store/row mapper、CollectManage 生命周期、SDKManage 替换语义和 JMX 资源上限测试，并在测试失败时终止构建。Console 的 Kafka/IoTDB 集成测试分别由 `-Dkafka.pipeline.integration=true` 和 `-Dkafka.iotdb.integration=true` 启用，未设置开关时自行跳过；连接地址和凭据通过同名前缀的系统属性覆盖默认值。Core 的 Kafka E2E 测试通过现有 profile 显式运行。命令显式跳过仓库中与本模块无关的历史 Checkstyle 问题；本次涉及的 Java 文件仍需单独通过定向 Checkstyle。下面的真实环境结果来自对应版本和拓扑的一次完整演练，不属于日常单元测试的自动断言；重新验证时需要按表中拓扑启动 Kafka、JMX、IoTDB 和工作负载，再运行 `KafkaMetricPipelineIntegrationTest` 及 Core 的 Kafka E2E 测试。
+默认测试会编译并执行现有单元测试，包括 ReportController 查询、IoTDB module 路由、store/row mapper、CollectManage 生命周期、SDKManage 替换语义和 JMX 资源上限测试，并在测试失败时终止构建。Console 的 Kafka/IoTDB 集成测试分别由 `-Dkafka.pipeline.integration=true` 和 `-Dkafka.iotdb.integration=true` 启用，未设置开关时自行跳过；连接地址和凭据通过同名前缀的系统属性覆盖默认值。`ReportControllerKafkaPipelineIntegrationTest` 使用 `KafkaMetricCollect` 经过 `SDKManage` 采集真实 Kafka/JMX 指标并写入 IoTDB，最终调用 `/report/reportBySingle`，断言接口返回只由 JMX 提供的 Broker 每分钟消息速率及对应的组织、集群和 Broker 标签。Core 的 Kafka E2E 测试通过现有 profile 显式运行。命令显式跳过仓库中与本模块无关的历史 Checkstyle 问题；本次涉及的 Java 文件仍需单独通过定向 Checkstyle。下面的真实环境结果来自对应版本和拓扑的一次完整演练，不属于日常单元测试的自动断言；重新验证时需要按表中拓扑启动 Kafka、JMX、IoTDB 和工作负载，再运行 `ReportControllerKafkaPipelineIntegrationTest` 及 Core 的 Kafka E2E 测试。
 
 | 项目 | 配置 |
 | --- | --- |
