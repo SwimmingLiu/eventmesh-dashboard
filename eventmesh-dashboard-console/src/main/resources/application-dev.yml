@@ -79,3 +79,14 @@ function:
     defaultConfig:
       engineType: iotdb
       engineAddress: 127.0.0.1:6667
+    kafkaCollectConfigList:
+      - enabled: ${KAFKA_METRICS_ENABLED:false}
+        organizationId: ${KAFKA_ORGANIZATION_ID:1}
+        clusterId: ${KAFKA_CLUSTER_ID:1}
+        clusterName: ${KAFKA_CLUSTER_NAME:kafka-local}
+        bootstrapServers: ${KAFKA_BOOTSTRAP_SERVERS:127.0.0.1:9092}
+        intervalMillis: ${KAFKA_METRICS_INTERVAL_MILLIS:5000}
+        brokers:
+          - brokerId: ${KAFKA_BROKER_ID:1}
+            host: ${KAFKA_JMX_HOST:127.0.0.1}
+            port: ${KAFKA_JMX_PORT:9999}

@@ -15,38 +15,25 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.console.function.report.model;
+package org.apache.eventmesh.dashboard.core.gather.kafka.collector;
 
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.KafkaMetricCollection;
 
-@Data
-@EqualsAndHashCode(callSuper = true)
-public class SingleGeneralReportDO extends GeneralReportDO {
+final class KafkaAdminSnapshot {
 
-    /**
-     * 二级维度，是在原有的数据上进行整理。 对 order 与 分页，不关系
-     */
-    private String twoLevelGroup;
+    private final KafkaMetricCollection metrics;
+    private final KafkaClusterMetadata metadata;
 
-    private String order;
+    KafkaAdminSnapshot(KafkaMetricCollection metrics, KafkaClusterMetadata metadata) {
+        this.metrics = metrics;
+        this.metadata = metadata;
+    }
 
-    private Integer limit;
+    KafkaMetricCollection metrics() {
+        return metrics;
+    }
 
-    private Integer offset;
-
-    /** Kafka metric dimension: cluster, broker, topic, partition, group, or replica. */
-    private String kafkaDimension;
-
-    /** Kafka metric name, for example BytesIn. */
-    private String kafkaMetric;
-
-    private String brokerId;
-
-    private String topicName;
-
-    private String kafkaGroupId;
-
-    private Integer partitionId;
-
+    KafkaClusterMetadata metadata() {
+        return metadata;
+    }
 }

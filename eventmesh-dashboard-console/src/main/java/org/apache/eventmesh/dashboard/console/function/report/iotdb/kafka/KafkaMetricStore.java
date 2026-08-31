@@ -15,38 +15,14 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.console.function.report.model;
+package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
 
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+/**
+ * Stores one Kafka metric collection in the configured metrics repository.
+ */
+public interface KafkaMetricStore {
 
-@Data
-@EqualsAndHashCode(callSuper = true)
-public class SingleGeneralReportDO extends GeneralReportDO {
+    void initialize();
 
-    /**
-     * 二级维度，是在原有的数据上进行整理。 对 order 与 分页，不关系
-     */
-    private String twoLevelGroup;
-
-    private String order;
-
-    private Integer limit;
-
-    private Integer offset;
-
-    /** Kafka metric dimension: cluster, broker, topic, partition, group, or replica. */
-    private String kafkaDimension;
-
-    /** Kafka metric name, for example BytesIn. */
-    private String kafkaMetric;
-
-    private String brokerId;
-
-    private String topicName;
-
-    private String kafkaGroupId;
-
-    private Integer partitionId;
-
+    void write(KafkaMetricWriteBatch batch);
 }

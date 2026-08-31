@@ -15,38 +15,24 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.console.function.report.model;
+package org.apache.eventmesh.dashboard.core.gather.kafka.metrics;
 
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+import java.util.Optional;
 
-@Data
-@EqualsAndHashCode(callSuper = true)
-public class SingleGeneralReportDO extends GeneralReportDO {
+/**
+ * Defines one Kafka metric independently from the adapter used to collect it.
+ */
+public interface KafkaMetricDefinition {
 
-    /**
-     * 二级维度，是在原有的数据上进行整理。 对 order 与 分页，不关系
-     */
-    private String twoLevelGroup;
+    String metricName();
 
-    private String order;
+    KafkaMetricType type();
 
-    private Integer limit;
+    KafkaMetricDimension dimension();
 
-    private Integer offset;
+    KafkaMetricSource source();
 
-    /** Kafka metric dimension: cluster, broker, topic, partition, group, or replica. */
-    private String kafkaDimension;
-
-    /** Kafka metric name, for example BytesIn. */
-    private String kafkaMetric;
-
-    private String brokerId;
-
-    private String topicName;
-
-    private String kafkaGroupId;
-
-    private Integer partitionId;
-
+    default Optional<KafkaJmxDescriptor> jmx() {
+        return Optional.empty();
+    }
 }

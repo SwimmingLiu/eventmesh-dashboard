@@ -24,9 +24,12 @@ import org.apache.eventmesh.dashboard.common.model.metadata.ClusterMetadata;
 import org.apache.eventmesh.dashboard.common.model.metadata.CollectMetadata;
 import org.apache.eventmesh.dashboard.common.model.metadata.RuntimeMetadata;
 import org.apache.eventmesh.dashboard.common.util.ClasspathScanner;
+import org.apache.eventmesh.dashboard.console.function.report.ReportConfig.KafkaCollectConfig;
 import org.apache.eventmesh.dashboard.console.function.report.ReportHandlerManage;
 import org.apache.eventmesh.dashboard.console.function.report.collect.active.AbstractMetadataCollect;
 import org.apache.eventmesh.dashboard.console.function.report.collect.exporter.CollectExporter;
+import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricCollect;
+import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.KafkaMetricStore;
 import org.apache.eventmesh.dashboard.console.function.report.model.base.Time;
 
 import org.apache.tomcat.util.threads.ThreadPoolExecutor;
@@ -83,6 +86,8 @@ public class CollectManage {
 
     private Map<Long, CollectExporter> collectExporterMap = new ConcurrentHashMap<>();
 
+    private final Map<String, KafkaMetricCollect> kafkaCollectMap = new ConcurrentHashMap<>();
+
     private Map<Long, Collect> collectMap = new ConcurrentHashMap<>();
 
     private Map<Long, AbstractMetadataCollect<Object>> collectCacheMap = new ConcurrentHashMap<>();
@@ -101,6 +106,36 @@ public class CollectManage {
         this.collectExporterMap.forEach((clusterId, exporter) -> {
             this.threadPoolExecutor.execute(exporter::request);
         });
+        this.kafkaCollectMap.forEach((clusterId, collector) -> {
+            this.threadPoolExecutor.execute(() -> {
+                try {
+                    collector.request();
+                } catch (Exception e) {
+                    log.error("Kafka metric collection failed for cluster {}", clusterId, e);
+                }
+            });
+        });
+    }
+
+    public void registerKafka(KafkaCollectConfig config, KafkaMetricStore store) {
+        if (config == null || !config.isEnabled()) {
+            return;
+        }
+        KafkaMetricCollect collector = new KafkaMetricCollect(config, store);
+        KafkaMetricCollect previous = kafkaCollectMap.put(collector.clusterId(), collector);
+        if (previous != null) {
+            previous.close();
+        }
+    }
+
+    public void unregisterKafka(Long clusterId) {
+        if (clusterId == null) {
+            return;
+        }
+        KafkaMetricCollect collector = kafkaCollectMap.remove(clusterId.toString());
+        if (collector != null) {
+            collector.close();
+        }
     }
 
 

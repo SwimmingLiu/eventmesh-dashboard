@@ -110,6 +110,9 @@ public class ReportHandlerManage {
     private boolean enable = true;
 
     public void init() {
+        if (!this.enable) {
+            return;
+        }
         this.handlerConfig();
         ClasspathScanner classpathScanner =
             ClasspathScanner.builder().base(ReportHandlerManage.class).subPath("/model/**").build();
@@ -119,10 +122,12 @@ public class ReportHandlerManage {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        if (!this.enable) {
+        if (this.reportConfig == null) {
             return;
         }
 
+        this.collectManage.setReportHandlerManage(this);
+        this.registerKafkaCollectors();
         this.metadataDataManage.init(this.reportConfig.getUrl(), this.reportConfig.getUsername(), this.reportConfig.getPassword());
         scheduledExecutorService.scheduleAtFixedRate(this.collectManage::request, 5, 5, TimeUnit.SECONDS);
 
@@ -155,7 +160,13 @@ public class ReportHandlerManage {
     }
 
     private void handlerConfig() {
-        this.reportEngine = this.createEngine(this.reportConfig.getDefaultConfig());
+        if (this.reportConfig == null) {
+            return;
+        }
+        AbstractReportEngine defaultEngine = this.createEngine(this.reportConfig.getDefaultConfig());
+        if (defaultEngine != null) {
+            this.reportEngine = defaultEngine;
+        }
         if (Objects.isNull(this.reportConfig.getReportEngineConfigList())) {
             return;
         }
@@ -167,9 +178,13 @@ public class ReportHandlerManage {
             return null;
         }
         Class<?> clazz = engineClasses.get(reportEngineConfig.getEngineType());
+        if (clazz == null) {
+            throw new IllegalArgumentException("Unsupported report engine type: " + reportEngineConfig.getEngineType());
+        }
         try {
-            AbstractReportEngine reportEngine = (AbstractReportEngine) clazz.newInstance();
+            AbstractReportEngine reportEngine = (AbstractReportEngine) clazz.getDeclaredConstructor().newInstance();
             reportEngine.setReportEngineConfig(reportEngineConfig);
+            reportEngine.init();
             reportEngineMap.put(reportEngineConfig.getName(), reportEngine);
             return reportEngine;
         } catch (Exception e) {
@@ -177,8 +192,17 @@ public class ReportHandlerManage {
         }
     }
 
+    private void registerKafkaCollectors() {
+        if (!(this.reportEngine instanceof IotDBReportEngine iotDBReportEngine)
+            || this.reportConfig.getKafkaCollectConfigList() == null) {
+            return;
+        }
+        this.reportConfig.getKafkaCollectConfigList()
+            .forEach(config -> this.collectManage.registerKafka(config, iotDBReportEngine.kafkaMetricStore()));
+    }
+
     private void ddlHandler() {
-        if (!this.reportConfig.isInitAllTables()) {
+        if (this.reportConfig == null || !this.reportConfig.isInitAllTables()) {
             return;
         }
         this.reportEngineMap.forEach((k, v) -> {
@@ -211,6 +235,9 @@ public class ReportHandlerManage {
         ReportMeta reportMeta = clazz.getAnnotation(ReportMeta.class);
         if (Objects.isNull(reportMeta)) {
             return;
+        }
+        if (this.reportEngine == null) {
+            throw new IllegalStateException("A report engine must be configured before report metadata is registered");
         }
 
         String className = clazz.getSimpleName();
@@ -254,14 +281,17 @@ public class ReportHandlerManage {
         Map<String, CompletableFuture<List<Map<String, Object>>>> completableFutures = new HashMap<>(singleGeneralReportDOList.size());
         singleGeneralReportDOList.forEach(reportDO -> {
             CompletableFuture<List<Map<String, Object>>> completableFuture = reportEngine.query(reportDO);
-            completableFutures.put(reportDO.getReportType(), completableFuture);
+            completableFutures.put(reportDO.getReportName(), completableFuture);
         });
         Map<String, List<Map<String, Object>>> resultMap = new HashMap<>(singleGeneralReportDOList.size());
         completableFutures.forEach((key, completableFuture) -> {
             try {
                 List<Map<String, Object>> singleData = completableFuture.get();
                 resultMap.put(key, singleData);
-            } catch (InterruptedException | ExecutionException e) {
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException(e);
+            } catch (ExecutionException e) {
                 throw new RuntimeException(e);
             }
         });

@@ -21,6 +21,9 @@ import org.apache.eventmesh.dashboard.console.function.report.AbstractReportEngi
 import org.apache.eventmesh.dashboard.console.function.report.ReportViewType;
 import org.apache.eventmesh.dashboard.console.function.report.annotation.AbstractReportMetaHandler;
 import org.apache.eventmesh.dashboard.console.function.report.annotation.ReportMetaData;
+import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.IotDBKafkaMetricStore;
+import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.KafkaMetricQueryService;
+import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.KafkaMetricStore;
 import org.apache.eventmesh.dashboard.console.function.report.model.SingleGeneralReportDO;
 
 import org.apache.commons.collections.CollectionUtils;
@@ -167,6 +170,8 @@ public class IotDBReportEngine extends AbstractReportEngine {
         
         """;
     private DruidDataSource dataSource;
+    private KafkaMetricStore kafkaMetricStore;
+    private KafkaMetricQueryService kafkaMetricQueryService;
     private boolean isBatch = false;
 
     @Override
@@ -175,12 +180,22 @@ public class IotDBReportEngine extends AbstractReportEngine {
             this.initDatabase();
             this.dataSource =
                 this.createDataSource("jdbc:iotdb://" + this.reportEngineConfig.getEngineAddress() + "/eventmesh_dashboard?sql_dialect=table");
+            this.kafkaMetricStore = new IotDBKafkaMetricStore(this.dataSource);
+            this.kafkaMetricStore.initialize();
+            this.kafkaMetricQueryService = new KafkaMetricQueryService(this.dataSource);
         } catch (Exception e) {
             if (this.dataSource != null) {
                 this.dataSource.close();
             }
             throw new RuntimeException(e);
         }
+    }
+
+    public KafkaMetricStore kafkaMetricStore() {
+        if (kafkaMetricStore == null) {
+            throw new IllegalStateException("IotDBReportEngine has not been initialized");
+        }
+        return kafkaMetricStore;
     }
 
     public void initDatabase() throws SQLException {
@@ -215,8 +230,12 @@ public class IotDBReportEngine extends AbstractReportEngine {
         return new IotDBReportMetaHandler();
     }
 
+
     @Override
     public CompletableFuture<List<Map<String, Object>>> query(SingleGeneralReportDO singleGeneralReportDO) {
+        if (this.kafkaMetricQueryService != null && this.kafkaMetricQueryService.supports(singleGeneralReportDO)) {
+            return CompletableFuture.supplyAsync(() -> this.kafkaMetricQueryService.query(singleGeneralReportDO));
+        }
         return CompletableFuture.supplyAsync(() -> {
             String sql = this.buildSql(singleGeneralReportDO.getReportName(), singleGeneralReportDO.getReportType(), singleGeneralReportDO);
             try (Connection connection = this.dataSource.getConnection();

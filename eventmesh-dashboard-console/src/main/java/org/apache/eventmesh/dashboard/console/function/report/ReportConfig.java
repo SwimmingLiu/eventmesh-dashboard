@@ -18,6 +18,7 @@
 package org.apache.eventmesh.dashboard.console.function.report;
 
 import java.util.List;
+import java.util.Map;
 
 import lombok.Data;
 
@@ -29,6 +30,12 @@ public class ReportConfig {
     private ReportEngineConfig defaultConfig;
 
     private List<ReportEngineConfig> reportEngineConfigList;
+
+    /**
+     * Kafka clusters whose metrics are collected directly by Dashboard and persisted by the
+     * configured IoTDB report engine.
+     */
+    private List<KafkaCollectConfig> kafkaCollectConfigList;
 
     private String url;
 
@@ -44,6 +51,48 @@ public class ReportConfig {
         private String engineType;
 
         private String engineAddress;
+
+    }
+
+    @Data
+    public static class KafkaCollectConfig {
+
+        private boolean enabled = true;
+
+        private Long organizationId;
+
+        private Long clusterId;
+
+        private String clusterName;
+
+        private String bootstrapServers;
+
+        private long intervalMillis = 5_000L;
+
+        private Map<String, String> adminProperties;
+
+        private List<KafkaBrokerJmxConfig> brokers;
+
+    }
+
+    @Data
+    public static class KafkaBrokerJmxConfig {
+
+        private int brokerId;
+
+        private String host;
+
+        private int port;
+
+        private String username;
+
+        private String password;
+
+        private boolean ssl;
+
+        private long connectionTimeoutMillis = 10_000L;
+
+        private long requestTimeoutMillis = 10_000L;
 
     }
 

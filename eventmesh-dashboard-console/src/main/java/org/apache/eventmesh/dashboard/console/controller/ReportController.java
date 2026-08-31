@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -44,6 +45,8 @@ public class ReportController {
         List<SingleGeneralReportDO> singleGeneralReportDOList = new ArrayList<>();
         multiGeneralReportDO.getReportNameList().forEach(reportName -> {
             SingleGeneralReportDO singleGeneralReportDO = new SingleGeneralReportDO();
+            BeanUtils.copyProperties(multiGeneralReportDO, singleGeneralReportDO);
+            singleGeneralReportDO.setReportName(reportName);
             singleGeneralReportDOList.add(singleGeneralReportDO);
         });
         return reportHandlerManage.queryResultIsMap(singleGeneralReportDOList);
