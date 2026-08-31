@@ -27,9 +27,9 @@ import java.time.LocalDateTime;
 
 import javax.sql.DataSource;
 
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
@@ -41,7 +41,7 @@ public class KafkaMetricQueryServiceTest {
     private final ResultSet resultSet = Mockito.mock(ResultSet.class);
     private final ResultSetMetaData metaData = Mockito.mock(ResultSetMetaData.class);
 
-    @Before
+    @BeforeEach
     public void setUp() throws Exception {
         Mockito.when(dataSource.getConnection()).thenReturn(connection);
         Mockito.when(connection.prepareStatement(Mockito.anyString())).thenReturn(statement);
@@ -67,9 +67,9 @@ public class KafkaMetricQueryServiceTest {
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         Mockito.verify(connection).prepareStatement(sql.capture());
-        Assert.assertTrue(sql.getValue().contains("FROM kafka_broker_metrics"));
-        Assert.assertTrue(sql.getValue().contains("\"bytes_in\" AS value"));
-        Assert.assertTrue(sql.getValue().endsWith("ORDER BY time DESC LIMIT 50"));
+        Assertions.assertTrue(sql.getValue().contains("FROM kafka_broker_metrics"));
+        Assertions.assertTrue(sql.getValue().contains("\"bytes_in\" AS value"));
+        Assertions.assertTrue(sql.getValue().endsWith("ORDER BY time DESC LIMIT 50"));
         Mockito.verify(statement).setString(1, "7");
         Mockito.verify(statement).setString(2, "9");
         Mockito.verify(statement).setString(3, "2");
@@ -83,6 +83,8 @@ public class KafkaMetricQueryServiceTest {
         report.setReportName("consumer-lag");
         report.setKafkaDimension("group");
         report.setKafkaMetric("Lag");
+        report.setOrganizationId(7L);
+        report.setClustersId(9L);
         report.setKafkaGroupId("orders-consumer");
         report.setTopicName("orders");
         report.setPartitionId(3);
@@ -91,17 +93,29 @@ public class KafkaMetricQueryServiceTest {
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         Mockito.verify(connection).prepareStatement(sql.capture());
-        Assert.assertTrue(sql.getValue().contains("FROM kafka_group_partition_metrics"));
-        Mockito.verify(statement).setString(1, "orders");
-        Mockito.verify(statement).setString(2, "orders-consumer");
-        Mockito.verify(statement).setString(3, "3");
+        Assertions.assertTrue(sql.getValue().contains("FROM kafka_group_partition_metrics"));
+        Mockito.verify(statement).setString(1, "7");
+        Mockito.verify(statement).setString(2, "9");
+        Mockito.verify(statement).setString(3, "orders");
+        Mockito.verify(statement).setString(4, "orders-consumer");
+        Mockito.verify(statement).setString(5, "3");
     }
 
-    @Test(expected = IllegalArgumentException.class)
+    @Test
     public void testRejectsUnknownMetricInsteadOfInterpolatingIt() {
         SingleGeneralReportDO report = new SingleGeneralReportDO();
         report.setReportName("kafka_broker_bytes_in_from_users");
 
-        new KafkaMetricQueryService(dataSource).query(report);
+        Assertions.assertThrows(IllegalArgumentException.class,
+            () -> new KafkaMetricQueryService(dataSource).query(report));
+    }
+
+    @Test
+    public void testRejectsQueryWithoutTenantScope() {
+        SingleGeneralReportDO report = new SingleGeneralReportDO();
+        report.setReportName("kafka_cluster_alive");
+
+        Assertions.assertThrows(IllegalArgumentException.class,
+            () -> new KafkaMetricQueryService(dataSource).query(report));
     }
 }

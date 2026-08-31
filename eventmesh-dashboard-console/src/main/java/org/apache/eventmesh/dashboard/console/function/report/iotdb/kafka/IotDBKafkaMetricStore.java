@@ -17,6 +17,9 @@
 
 package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
 
+import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricStore;
+import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricWriteBatch;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;

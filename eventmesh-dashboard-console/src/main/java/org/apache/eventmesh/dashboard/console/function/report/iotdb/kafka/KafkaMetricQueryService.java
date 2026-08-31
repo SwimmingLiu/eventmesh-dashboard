@@ -106,6 +106,9 @@ public final class KafkaMetricQueryService {
     }
 
     private QueryStatement buildQuery(SingleGeneralReportDO report, MetricQuery metric) {
+        if (report.getOrganizationId() == null || report.getClustersId() == null) {
+            throw new IllegalArgumentException("organizationId and clustersId are required for Kafka metric queries");
+        }
         StringBuilder sql = new StringBuilder("SELECT time");
         for (String tag : metric.table().tags()) {
             sql.append(", ").append(quote(tag));

@@ -15,18 +15,29 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.core.function.SDK.config;
+package org.apache.eventmesh.dashboard.console.function.report.iotdb;
 
-import java.util.HashMap;
+import org.apache.eventmesh.dashboard.console.function.report.ReportConfig;
+import org.apache.eventmesh.dashboard.console.function.report.collect.ManagedCollect;
+import org.apache.eventmesh.dashboard.console.function.report.model.SingleGeneralReportDO;
+
+import java.util.List;
 import java.util.Map;
 
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+/**
+ * A self-contained metric domain backed by the IoTDB report engine.
+ */
+public interface IotDBMetricModule {
 
-@Data
-@EqualsAndHashCode(callSuper = true)
-public class CreateKakfaConfig extends AbstractMultiCreateSDKConfig {
+    String name();
 
-    private Map<String, Object> adminProperties = new HashMap<>();
+    void initialize();
 
+    boolean supports(SingleGeneralReportDO report);
+
+    List<Map<String, Object>> query(SingleGeneralReportDO report);
+
+    default List<ManagedCollect> createCollects(ReportConfig reportConfig) {
+        return List.of();
+    }
 }

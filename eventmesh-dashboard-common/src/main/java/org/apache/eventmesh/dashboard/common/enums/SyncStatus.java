@@ -17,9 +17,6 @@
 
 package org.apache.eventmesh.dashboard.common.enums;
 
-/**
- * @author hahaha
- */
 public enum SyncStatus {
 
     PERSISTENCE,

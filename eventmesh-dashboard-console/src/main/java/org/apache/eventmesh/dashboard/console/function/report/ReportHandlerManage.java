@@ -23,6 +23,7 @@ import org.apache.eventmesh.dashboard.console.function.report.annotation.Aggrega
 import org.apache.eventmesh.dashboard.console.function.report.annotation.ReportMeta;
 import org.apache.eventmesh.dashboard.console.function.report.annotation.ReportMetaData;
 import org.apache.eventmesh.dashboard.console.function.report.collect.CollectManage;
+import org.apache.eventmesh.dashboard.console.function.report.collect.ManagedCollect;
 import org.apache.eventmesh.dashboard.console.function.report.collect.MetadataDataManage;
 import org.apache.eventmesh.dashboard.console.function.report.iotdb.IotDBReportEngine;
 import org.apache.eventmesh.dashboard.console.function.report.model.SingleGeneralReportDO;
@@ -52,6 +53,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.google.common.base.CaseFormat;
 
@@ -84,7 +86,7 @@ import lombok.extern.slf4j.Slf4j;
  *  2. 如果同时支持批量与单个，那么 前端需要提供连个
  */
 @Slf4j
-public class ReportHandlerManage {
+public class ReportHandlerManage implements AutoCloseable {
 
     private static final Map<String, Class<?>> engineClasses = new HashMap<>();
 
@@ -96,6 +98,7 @@ public class ReportHandlerManage {
     private final Map<Class<?>, String> clazzToTableName = new HashMap<>();
     private final CollectManage collectManage = new CollectManage();
     private final MetadataDataManage metadataDataManage = new MetadataDataManage();
+    private final AtomicBoolean closed = new AtomicBoolean();
     private Map<String, ReportEngine> reportEngineMap = new HashMap<>();
     @Setter
     private ReportEngine reportEngine;
@@ -113,6 +116,19 @@ public class ReportHandlerManage {
         if (!this.enable) {
             return;
         }
+        try {
+            this.initialize();
+        } catch (RuntimeException | Error e) {
+            try {
+                this.close();
+            } catch (RuntimeException closeException) {
+                e.addSuppressed(closeException);
+            }
+            throw e;
+        }
+    }
+
+    private void initialize() {
         this.handlerConfig();
         ClasspathScanner classpathScanner =
             ClasspathScanner.builder().base(ReportHandlerManage.class).subPath("/model/**").build();
@@ -127,7 +143,7 @@ public class ReportHandlerManage {
         }
 
         this.collectManage.setReportHandlerManage(this);
-        this.registerKafkaCollectors();
+        this.registerCollects(this.reportEngine.createCollects(this.reportConfig));
         this.metadataDataManage.init(this.reportConfig.getUrl(), this.reportConfig.getUsername(), this.reportConfig.getPassword());
         scheduledExecutorService.scheduleAtFixedRate(this.collectManage::request, 5, 5, TimeUnit.SECONDS);
 
@@ -137,6 +153,23 @@ public class ReportHandlerManage {
 
         this.buildDeleteDataTask();
         this.ddlHandler();
+    }
+
+    private void registerCollects(List<ManagedCollect> collects) {
+        for (int index = 0; index < collects.size(); index++) {
+            try {
+                this.collectManage.registerManagedCollect(collects.get(index));
+            } catch (RuntimeException e) {
+                for (int remaining = index + 1; remaining < collects.size(); remaining++) {
+                    try {
+                        collects.get(remaining).close();
+                    } catch (RuntimeException closeException) {
+                        e.addSuppressed(closeException);
+                    }
+                }
+                throw e;
+            }
+        }
     }
 
     private void buildDeleteDataTask() {
@@ -190,15 +223,6 @@ public class ReportHandlerManage {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-    }
-
-    private void registerKafkaCollectors() {
-        if (!(this.reportEngine instanceof IotDBReportEngine iotDBReportEngine)
-            || this.reportConfig.getKafkaCollectConfigList() == null) {
-            return;
-        }
-        this.reportConfig.getKafkaCollectConfigList()
-            .forEach(config -> this.collectManage.registerKafka(config, iotDBReportEngine.kafkaMetricStore()));
     }
 
     private void ddlHandler() {
@@ -278,6 +302,7 @@ public class ReportHandlerManage {
     }
 
     public Map<String, List<Map<String, Object>>> queryResultIsMap(List<SingleGeneralReportDO> singleGeneralReportDOList) {
+        singleGeneralReportDOList.forEach(this::validateKafkaQueryScope);
         Map<String, CompletableFuture<List<Map<String, Object>>>> completableFutures = new HashMap<>(singleGeneralReportDOList.size());
         singleGeneralReportDOList.forEach(reportDO -> {
             CompletableFuture<List<Map<String, Object>>> completableFuture = reportEngine.query(reportDO);
@@ -296,6 +321,71 @@ public class ReportHandlerManage {
             }
         });
         return resultMap;
+    }
+
+    private void validateKafkaQueryScope(SingleGeneralReportDO report) {
+        boolean kafkaQuery = StringUtils.isNotBlank(report.getKafkaDimension())
+            || StringUtils.startsWithIgnoreCase(report.getReportName(), "kafka_");
+        if (!kafkaQuery) {
+            return;
+        }
+        if (reportConfig == null || reportConfig.getKafkaCollectConfigList() == null) {
+            throw new SecurityException("Kafka metric query scope is not configured");
+        }
+        boolean authorized = reportConfig.getKafkaCollectConfigList().stream().anyMatch(config ->
+            Objects.equals(config.getOrganizationId(), report.getOrganizationId())
+                && Objects.equals(config.getClusterId(), report.getClustersId()));
+        if (!authorized) {
+            throw new SecurityException("Kafka metric query scope is not authorized");
+        }
+    }
+
+    @Override
+    public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        scheduledExecutorService.shutdownNow();
+        try {
+            scheduledExecutorService.awaitTermination(5L, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        RuntimeException failure = null;
+        try {
+            collectManage.close();
+        } catch (RuntimeException e) {
+            failure = e;
+        }
+        try {
+            metadataDataManage.close();
+        } catch (RuntimeException e) {
+            failure = append(failure, e);
+        }
+        Set<ReportEngine> engines = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (reportEngine != null) {
+            engines.add(reportEngine);
+        }
+        engines.addAll(reportEngineMap.values());
+        for (ReportEngine engine : engines) {
+            try {
+                engine.close();
+            } catch (RuntimeException e) {
+                failure = append(failure, e);
+            }
+        }
+        reportEngineMap.clear();
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    private RuntimeException append(RuntimeException failure, RuntimeException next) {
+        if (failure == null) {
+            return next;
+        }
+        failure.addSuppressed(next);
+        return failure;
     }
 
 

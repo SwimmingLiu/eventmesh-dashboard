@@ -168,7 +168,6 @@
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
-            <version>2.17.1</version>
         </dependency>
         <dependency>
             <groupId>org.opensearch.client</groupId>
@@ -205,6 +204,11 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <groupId>org.junit.vintage</groupId>
+            <artifactId>junit-vintage-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-inline</artifactId>
             <version>5.2.0</version> <!-- 根据项目要求选择版本 -->
@@ -231,9 +235,22 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
                 <configuration>
+                    <failIfNoTests>true</failIfNoTests>
                     <excludes>
+                        <!-- Tests below require external databases/services or are legacy integration fixtures. -->
                         <exclude>**/org/apache/eventmesh/dashboard/console/integration/**/*.java</exclude>
                         <exclude>**/org/apache/eventmesh/dashboard/console/EventMeshDashboardApplicationTest.java</exclude>
+                        <exclude>**/ClusterAndRuntimeDomainImplTest.java</exclude>
+                        <exclude>**/MetadataDataManageTest.java</exclude>
+                        <exclude>**/IotDBReportEngineTest.java</exclude>
+                        <exclude>**/TestOprLog.java</exclude>
+                        <exclude>**/ClusterEntityMapperTest.java</exclude>
+                        <exclude>**/ClusterRelationshipMapperTest.java</exclude>
+                        <exclude>**/RuntimeEntityMapperTest.java</exclude>
+                        <exclude>**/HealthDataServiceDatabaseImplTest.java</exclude>
+                        <exclude>**/TopicEntityMapperTest.java</exclude>
+                        <exclude>**/ClusterEntityServiceImplTest.java</exclude>
+                        <exclude>**/ConnectionDataServiceDatabaseImplTest.java</exclude>
                     </excludes>
                 </configuration>
             </plugin>

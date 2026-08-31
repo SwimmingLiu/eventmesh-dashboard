@@ -17,10 +17,14 @@
 
 package org.apache.eventmesh.dashboard.console.function.report.collect.kafka;
 
+import org.apache.eventmesh.dashboard.common.enums.ClusterType;
+import org.apache.eventmesh.dashboard.common.model.base.BaseSyncBase;
 import org.apache.eventmesh.dashboard.console.function.report.ReportConfig.KafkaBrokerJmxConfig;
 import org.apache.eventmesh.dashboard.console.function.report.ReportConfig.KafkaCollectConfig;
-import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.KafkaMetricPersistenceCoordinator;
-import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.KafkaMetricStore;
+import org.apache.eventmesh.dashboard.console.function.report.collect.ManagedCollect;
+import org.apache.eventmesh.dashboard.core.function.SDK.SDKManage;
+import org.apache.eventmesh.dashboard.core.function.SDK.SDKTypeEnum;
+import org.apache.eventmesh.dashboard.core.function.SDK.config.CreateKakfaConfig;
 import org.apache.eventmesh.dashboard.core.gather.jmx.JmxConnectionConfig;
 import org.apache.eventmesh.dashboard.core.gather.kafka.collector.KafkaBrokerJmxEndpoint;
 
@@ -35,30 +39,37 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Owns the Kafka Admin client and JMX endpoints for one configured cluster.
  */
-public final class KafkaMetricCollect implements AutoCloseable {
+public final class KafkaMetricCollect implements ManagedCollect {
 
     private final String organizationId;
     private final String clusterId;
     private final String clusterName;
     private final long intervalMillis;
-    private final Admin admin;
+    private final Admin sdkClient;
     private final List<KafkaBrokerJmxEndpoint> endpoints;
     private final KafkaMetricPersistenceCoordinator coordinator;
     private final Clock clock;
+    private final SDKManage sdkManage;
+    private final String sdkClientKey;
     private final AtomicBoolean collecting = new AtomicBoolean();
 
     private volatile Instant nextCollectionAt = Instant.EPOCH;
 
     public KafkaMetricCollect(KafkaCollectConfig config, KafkaMetricStore store) {
-        this(config, store, Clock.systemUTC());
+        this(config, store, Clock.systemUTC(), SDKManage.getInstance());
     }
 
     KafkaMetricCollect(KafkaCollectConfig config, KafkaMetricStore store, Clock clock) {
+        this(config, store, clock, SDKManage.getInstance());
+    }
+
+    KafkaMetricCollect(KafkaCollectConfig config, KafkaMetricStore store, Clock clock, SDKManage sdkManage) {
         Objects.requireNonNull(config, "config");
         Objects.requireNonNull(store, "store");
         this.organizationId = requireId(config.getOrganizationId(), "organizationId");
@@ -66,32 +77,44 @@ public final class KafkaMetricCollect implements AutoCloseable {
         this.clusterName = requireText(config.getClusterName(), "clusterName");
         this.intervalMillis = requirePositive(config.getIntervalMillis(), "intervalMillis");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.sdkManage = Objects.requireNonNull(sdkManage, "sdkManage");
         this.endpoints = createEndpoints(config.getBrokers());
         this.coordinator = new KafkaMetricPersistenceCoordinator(store);
 
-        Map<String, Object> properties = new HashMap<>();
+        CreateKakfaConfig sdkConfig = new CreateKakfaConfig();
+        Map<String, Object> adminProperties = new HashMap<>();
         if (config.getAdminProperties() != null) {
-            properties.putAll(config.getAdminProperties());
+            adminProperties.putAll(config.getAdminProperties());
         }
-        properties.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
+        adminProperties.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
             requireText(config.getBootstrapServers(), "bootstrapServers"));
-        this.admin = Admin.create(properties);
+        sdkConfig.setAdminProperties(adminProperties);
+        KafkaMetricSDKMetadata sdkMetadata = new KafkaMetricSDKMetadata(config.getOrganizationId(), config.getClusterId());
+        this.sdkClientKey = sdkMetadata.getUnique();
+        this.sdkClient = this.sdkManage.createClient(SDKTypeEnum.ADMIN, sdkMetadata, sdkConfig,
+            sdkMetadata.getClusterType());
     }
 
     public String clusterId() {
         return clusterId;
     }
 
+    @Override
+    public String key() {
+        return "kafka:" + organizationId + ':' + clusterId;
+    }
+
     /**
      * Collects at most once per configured interval and never overlaps a previous cycle.
      */
+    @Override
     public void request() {
         Instant now = clock.instant();
         if (now.isBefore(nextCollectionAt) || !collecting.compareAndSet(false, true)) {
             return;
         }
         try {
-            coordinator.collectAndStore(organizationId, clusterId, clusterName, admin, endpoints);
+            coordinator.collectAndStore(organizationId, clusterId, clusterName, sdkClient, endpoints);
         } finally {
             nextCollectionAt = clock.instant().plusMillis(intervalMillis);
             collecting.set(false);
@@ -100,7 +123,7 @@ public final class KafkaMetricCollect implements AutoCloseable {
 
     @Override
     public void close() {
-        admin.close();
+        sdkManage.deleteClient(null, sdkClientKey, sdkClient);
     }
 
     private static List<KafkaBrokerJmxEndpoint> createEndpoints(List<KafkaBrokerJmxConfig> configs) {
@@ -146,5 +169,27 @@ public final class KafkaMetricCollect implements AutoCloseable {
             throw new IllegalArgumentException(name + " must be greater than zero");
         }
         return value;
+    }
+
+    private static final class KafkaMetricSDKMetadata extends BaseSyncBase {
+
+        private final String instanceId = UUID.randomUUID().toString();
+
+        private KafkaMetricSDKMetadata(Long organizationId, Long clusterId) {
+            setId(clusterId);
+            setOrganizationId(organizationId);
+            setClusterId(clusterId);
+            setClusterType(ClusterType.STORAGE_KAFKA_BROKER);
+        }
+
+        @Override
+        public String nodeUnique() {
+            return getClusterId().toString();
+        }
+
+        @Override
+        public String getUnique() {
+            return "KafkaMetricCollect-" + getOrganizationId() + '-' + getClusterId() + '-' + instanceId;
+        }
     }
 }

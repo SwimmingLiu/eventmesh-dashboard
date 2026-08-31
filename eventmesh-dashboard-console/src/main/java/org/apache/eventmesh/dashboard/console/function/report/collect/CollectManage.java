@@ -24,12 +24,9 @@ import org.apache.eventmesh.dashboard.common.model.metadata.ClusterMetadata;
 import org.apache.eventmesh.dashboard.common.model.metadata.CollectMetadata;
 import org.apache.eventmesh.dashboard.common.model.metadata.RuntimeMetadata;
 import org.apache.eventmesh.dashboard.common.util.ClasspathScanner;
-import org.apache.eventmesh.dashboard.console.function.report.ReportConfig.KafkaCollectConfig;
 import org.apache.eventmesh.dashboard.console.function.report.ReportHandlerManage;
 import org.apache.eventmesh.dashboard.console.function.report.collect.active.AbstractMetadataCollect;
 import org.apache.eventmesh.dashboard.console.function.report.collect.exporter.CollectExporter;
-import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricCollect;
-import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.KafkaMetricStore;
 import org.apache.eventmesh.dashboard.console.function.report.model.base.Time;
 
 import org.apache.tomcat.util.threads.ThreadPoolExecutor;
@@ -47,7 +44,10 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 import com.alibaba.druid.pool.DruidDataSource;
 
@@ -62,7 +62,7 @@ import lombok.extern.slf4j.Slf4j;
  * <p> 4. 定时同步 collect ， runtime 信息。 collect 用于触发 collect 行为， <p> runtime信息 用于触发 runtime 差集
  */
 @Slf4j
-public class CollectManage {
+public class CollectManage implements AutoCloseable {
 
     private static Map<ClusterType, String> CLUSTER_TYPE_URL = new HashMap<>();
 
@@ -86,7 +86,11 @@ public class CollectManage {
 
     private Map<Long, CollectExporter> collectExporterMap = new ConcurrentHashMap<>();
 
-    private final Map<String, KafkaMetricCollect> kafkaCollectMap = new ConcurrentHashMap<>();
+    private final Map<String, ManagedCollectHandle> managedCollectMap = new ConcurrentHashMap<>();
+
+    private final AtomicBoolean closed = new AtomicBoolean();
+
+    private final Object managedCollectLock = new Object();
 
     private Map<Long, Collect> collectMap = new ConcurrentHashMap<>();
 
@@ -103,38 +107,108 @@ public class CollectManage {
     }
 
     public void request() {
+        if (closed.get()) {
+            return;
+        }
         this.collectExporterMap.forEach((clusterId, exporter) -> {
-            this.threadPoolExecutor.execute(exporter::request);
+            this.execute(exporter::request);
         });
-        this.kafkaCollectMap.forEach((clusterId, collector) -> {
-            this.threadPoolExecutor.execute(() -> {
+        this.managedCollectMap.forEach((key, handle) -> {
+            this.execute(() -> {
                 try {
-                    collector.request();
+                    handle.request();
                 } catch (Exception e) {
-                    log.error("Kafka metric collection failed for cluster {}", clusterId, e);
+                    log.error("Report collection failed for {}", key, e);
                 }
             });
         });
     }
 
-    public void registerKafka(KafkaCollectConfig config, KafkaMetricStore store) {
-        if (config == null || !config.isEnabled()) {
-            return;
-        }
-        KafkaMetricCollect collector = new KafkaMetricCollect(config, store);
-        KafkaMetricCollect previous = kafkaCollectMap.put(collector.clusterId(), collector);
-        if (previous != null) {
-            previous.close();
+    private void execute(Runnable task) {
+        try {
+            threadPoolExecutor.execute(task);
+        } catch (RejectedExecutionException e) {
+            if (!closed.get()) {
+                throw e;
+            }
         }
     }
 
-    public void unregisterKafka(Long clusterId) {
-        if (clusterId == null) {
+    public void registerManagedCollect(ManagedCollect collect) {
+        Objects.requireNonNull(collect, "collect");
+        String key;
+        try {
+            key = Objects.requireNonNull(collect.key(), "collect.key");
+        } catch (RuntimeException e) {
+            collect.close();
+            throw e;
+        }
+        ManagedCollectHandle next = new ManagedCollectHandle(collect);
+        synchronized (managedCollectLock) {
+            if (closed.get()) {
+                collect.close();
+                throw new IllegalStateException("CollectManage is closed");
+            }
+            ManagedCollectHandle previous = managedCollectMap.remove(key);
+            if (previous != null) {
+                try {
+                    previous.close();
+                } catch (RuntimeException e) {
+                    try {
+                        next.close();
+                    } catch (RuntimeException closeException) {
+                        e.addSuppressed(closeException);
+                    }
+                    throw e;
+                }
+            }
+            managedCollectMap.put(key, next);
+        }
+    }
+
+    public void unregisterManagedCollect(String key) {
+        if (key == null) {
             return;
         }
-        KafkaMetricCollect collector = kafkaCollectMap.remove(clusterId.toString());
-        if (collector != null) {
-            collector.close();
+        ManagedCollectHandle handle;
+        synchronized (managedCollectLock) {
+            handle = managedCollectMap.remove(key);
+        }
+        if (handle != null) {
+            handle.close();
+        }
+    }
+
+    @Override
+    public void close() {
+        List<ManagedCollectHandle> handles;
+        synchronized (managedCollectLock) {
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
+            handles = new ArrayList<>(managedCollectMap.values());
+            managedCollectMap.clear();
+        }
+        threadPoolExecutor.shutdownNow();
+        try {
+            threadPoolExecutor.awaitTermination(5L, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        RuntimeException failure = null;
+        for (ManagedCollectHandle handle : handles) {
+            try {
+                handle.close();
+            } catch (RuntimeException e) {
+                if (failure == null) {
+                    failure = e;
+                } else {
+                    failure.addSuppressed(e);
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
         }
     }
 
@@ -292,6 +366,40 @@ public class CollectManage {
             }
         }
 
+    }
+
+    private static final class ManagedCollectHandle {
+
+        private final ManagedCollect collect;
+        private final ReentrantLock lock = new ReentrantLock();
+        private boolean closed;
+
+        private ManagedCollectHandle(ManagedCollect collect) {
+            this.collect = collect;
+        }
+
+        private void request() {
+            lock.lock();
+            try {
+                if (!closed) {
+                    collect.request();
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private void close() {
+            lock.lock();
+            try {
+                if (!closed) {
+                    closed = true;
+                    collect.close();
+                }
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 
 }

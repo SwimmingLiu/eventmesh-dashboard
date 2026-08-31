@@ -18,6 +18,7 @@
 package org.apache.eventmesh.dashboard.console.function.report;
 
 import org.apache.eventmesh.dashboard.console.function.report.annotation.ReportMetaData;
+import org.apache.eventmesh.dashboard.console.function.report.collect.ManagedCollect;
 import org.apache.eventmesh.dashboard.console.function.report.model.SingleGeneralReportDO;
 
 import java.lang.reflect.Field;
@@ -29,9 +30,13 @@ import java.util.concurrent.CompletableFuture;
 /**
  *
  */
-public interface ReportEngine {
+public interface ReportEngine extends AutoCloseable {
 
     CompletableFuture<List<Map<String, Object>>> query(SingleGeneralReportDO singleGeneralReportDO);
+
+    default List<ManagedCollect> createCollects(ReportConfig reportConfig) {
+        return List.of();
+    }
 
 
     void createReport(String tableName);
@@ -46,4 +51,8 @@ public interface ReportEngine {
     void deleteData();
 
     void createReportHandler(ReportMetaData reportMetaData, List<Field> fieldList);
+
+    @Override
+    default void close() {
+    }
 }

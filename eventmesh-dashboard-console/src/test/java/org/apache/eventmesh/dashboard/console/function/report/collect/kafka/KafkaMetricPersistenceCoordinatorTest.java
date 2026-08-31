@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
+package org.apache.eventmesh.dashboard.console.function.report.collect.kafka;
 
 import org.apache.eventmesh.dashboard.core.gather.kafka.collector.KafkaMetricsCollector;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.KafkaMetricCollection;
@@ -27,8 +27,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
@@ -48,14 +48,14 @@ public class KafkaMetricPersistenceCoordinatorTest {
         KafkaMetricCollection result = coordinator.collectAndStore("org-1", "cluster-1", "primary", admin,
             List.of());
 
-        Assert.assertSame(metrics, result);
+        Assertions.assertSame(metrics, result);
         ArgumentCaptor<KafkaMetricWriteBatch> batch = ArgumentCaptor.forClass(KafkaMetricWriteBatch.class);
         Mockito.verify(store).write(batch.capture());
-        Assert.assertEquals("org-1", batch.getValue().organizationId());
-        Assert.assertEquals("cluster-1", batch.getValue().clusterId());
-        Assert.assertEquals("primary", batch.getValue().clusterName());
-        Assert.assertEquals(collectedAt, batch.getValue().collectedAt());
-        Assert.assertSame(metrics, batch.getValue().metrics());
-        Assert.assertTrue(batch.getValue().durationMillis() >= 0);
+        Assertions.assertEquals("org-1", batch.getValue().organizationId());
+        Assertions.assertEquals("cluster-1", batch.getValue().clusterId());
+        Assertions.assertEquals("primary", batch.getValue().clusterName());
+        Assertions.assertEquals(collectedAt, batch.getValue().collectedAt());
+        Assertions.assertSame(metrics, batch.getValue().metrics());
+        Assertions.assertTrue(batch.getValue().durationMillis() >= 0);
     }
 }

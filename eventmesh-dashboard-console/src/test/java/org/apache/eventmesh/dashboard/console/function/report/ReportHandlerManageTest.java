@@ -18,6 +18,7 @@
 package org.apache.eventmesh.dashboard.console.function.report;
 
 import org.apache.eventmesh.dashboard.console.function.report.model.SingleGeneralReportDO;
+import org.apache.eventmesh.dashboard.console.function.report.ReportConfig.KafkaCollectConfig;
 
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.SqlSource;
@@ -66,9 +67,17 @@ public class ReportHandlerManageTest {
             CompletableFuture.completedFuture(List.of(Map.of("value", 3L))));
         ReportHandlerManage manage = new ReportHandlerManage();
         manage.setReportEngine(reportEngine);
+        ReportConfig reportConfig = new ReportConfig();
+        KafkaCollectConfig scope = new KafkaCollectConfig();
+        scope.setOrganizationId(7L);
+        scope.setClusterId(9L);
+        reportConfig.setKafkaCollectConfigList(List.of(scope));
+        manage.setReportConfig(reportConfig);
         SingleGeneralReportDO report = new SingleGeneralReportDO();
         report.setReportName("kafka_cluster_alive");
         report.setReportType("gauge");
+        report.setOrganizationId(7L);
+        report.setClustersId(9L);
 
         Map<String, List<Map<String, Object>>> result = manage.queryResultIsMap(List.of(report));
 

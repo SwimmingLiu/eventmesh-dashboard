@@ -17,6 +17,7 @@
 
 package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
 
+import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricWriteBatch;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.BrokerMetric;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.ClusterMetric;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.GroupMetric;

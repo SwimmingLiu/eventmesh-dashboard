@@ -17,6 +17,7 @@
 
 package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
 
+import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricWriteBatch;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.KafkaMetricCollection;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.TopicMetric;
 
@@ -28,8 +29,8 @@ import java.time.Instant;
 
 import javax.sql.DataSource;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 
@@ -52,7 +53,8 @@ public class IotDBKafkaMetricStoreTest {
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         Mockito.verify(connection, Mockito.times(2)).prepareStatement(sql.capture());
-        Assert.assertTrue(sql.getAllValues().stream().anyMatch(value -> value.startsWith("INSERT INTO kafka_topic_metrics")));
+        Assertions.assertTrue(sql.getAllValues().stream()
+            .anyMatch(value -> value.startsWith("INSERT INTO kafka_topic_metrics")));
         Mockito.verify(statement, Mockito.atLeastOnce()).setString(Mockito.anyInt(), Mockito.eq("orders'quoted"));
         Mockito.verify(statement, Mockito.times(2)).addBatch();
         Mockito.verify(statement, Mockito.times(2)).executeBatch();

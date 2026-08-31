@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
+package org.apache.eventmesh.dashboard.console.function.report.collect.kafka;
 
 import org.apache.eventmesh.dashboard.core.gather.kafka.collector.KafkaBrokerJmxEndpoint;
 import org.apache.eventmesh.dashboard.core.gather.kafka.collector.KafkaMetricsCollector;

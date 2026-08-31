@@ -53,7 +53,7 @@ import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-public class MetadataDataManage {
+public class MetadataDataManage implements AutoCloseable {
 
     private final List<NameAndId> nameAndIdList = new ArrayList<>();
     private final Map<NameAndId, NameAndId> nameAndIdMap = new ConcurrentHashMap<>();
@@ -125,6 +125,9 @@ public class MetadataDataManage {
     }
 
     public void init(String url, String user, String password) {
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("Metadata datasource URL must not be blank");
+        }
         try {
             this.dataSource = this.createSource(url, user, password);
         } catch (SQLException e) {
@@ -136,20 +139,32 @@ public class MetadataDataManage {
 
     public DruidDataSource createSource(String url, String user, String password) throws SQLException {
         DruidDataSource dataSource = new DruidDataSource();
-        dataSource.setUrl(url);
-        dataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
-        dataSource.setUsername(user);
-        dataSource.setPassword(password);
-        dataSource.setMaxActive(200);
-        dataSource.setInitialSize(50);
-        dataSource.setMaxWait(1000 * 60 * 60 * 24);
-        dataSource.init();
-        return dataSource;
+        try {
+            dataSource.setUrl(url);
+            dataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
+            dataSource.setUsername(user);
+            dataSource.setPassword(password);
+            dataSource.setMaxActive(200);
+            dataSource.setInitialSize(50);
+            dataSource.setMaxWait(1000 * 60 * 60 * 24);
+            dataSource.init();
+            return dataSource;
+        } catch (SQLException | RuntimeException e) {
+            dataSource.close();
+            throw e;
+        }
     }
 
     public void syncData() {
         this.executeSql();
         this.handlerMetadata();
+    }
+
+    @Override
+    public void close() {
+        if (dataSource != null) {
+            dataSource.close();
+        }
     }
 
     private void executeSql() {

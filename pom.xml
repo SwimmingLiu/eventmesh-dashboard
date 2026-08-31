@@ -154,9 +154,6 @@
                         <source>17</source>
                         <target>17</target>
                         <encoding>UTF-8</encoding>
-                        <testIncludes>
-                            <testInclude>none</testInclude>
-                        </testIncludes>
                         <annotationProcessorPaths>
                             <path>
                                 <groupId>org.mapstruct</groupId>
@@ -224,7 +221,7 @@
                     <version>3.5.3</version>
                     <configuration>
                         <argLine>-Xmx1024m</argLine>
-                        <testFailureIgnore>true</testFailureIgnore>
+                        <testFailureIgnore>false</testFailureIgnore>
                         <includes>
                             <include>**/*Test*.java</include>
                         </includes>

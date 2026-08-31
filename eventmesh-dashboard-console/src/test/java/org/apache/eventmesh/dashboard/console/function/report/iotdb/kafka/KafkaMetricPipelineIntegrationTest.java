@@ -17,6 +17,7 @@
 
 package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
 
+import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricPersistenceCoordinator;
 import org.apache.eventmesh.dashboard.console.function.report.model.SingleGeneralReportDO;
 import org.apache.eventmesh.dashboard.core.gather.jmx.JmxConnectionConfig;
 import org.apache.eventmesh.dashboard.core.gather.kafka.collector.KafkaBrokerJmxEndpoint;

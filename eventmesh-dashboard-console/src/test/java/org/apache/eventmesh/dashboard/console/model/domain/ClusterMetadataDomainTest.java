@@ -62,7 +62,6 @@ public class ClusterMetadataDomainTest {
     public void init() {
         clusterMetadataDomain.rootClusterDHO();
         clusterMetadataDomain.useBuildConfig();
-        clusterMetadataDomain.isConsoleModel();
         clusterMetadataDomain.setHandler(new DataHandler() {
             @Override
             public void registerRuntime(RuntimeEntity runtimeEntity, RuntimeBaseDO runtimeBaseDO, ColonyDO colonyDO) {
@@ -78,7 +77,7 @@ public class ClusterMetadataDomainTest {
 
             @Override
             public void registerCluster(ClusterEntity clusterEntity, ClusterBaseDO clusterBaseDO, ColonyDO colonyDO) {
-                ClusterType clusterType = clusterEntity.getClusterType();
+                ClusterType clusterType = colonyDO.getClusterType();
                 System.out.println("registerCluster clusterType : " + clusterType);
             }
 

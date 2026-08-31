@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 
 public class CollectExporterTest {
@@ -46,6 +47,7 @@ public class CollectExporterTest {
         clusterMetadata.setOrganizationId(1L);
         clusterMetadata.setClusterId(2L);
         clusterMetadata.setClusterName("test");
+        clusterMetadata.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER_MAIN_SLAVE);
         collectExporter.setClusterMetadata(clusterMetadata);
 
         ReportEngine reportEngine = new IotDBReportEngine();
@@ -72,6 +74,7 @@ public class CollectExporterTest {
 
 
     @Test
+    @Ignore("requires a RocketMQ exporter on localhost:5557")
     public void test_rocketmq_exporter() {
         collectExporter.setUrl("http://127.0.0.1:5557/metrics");
         collectExporter.request();

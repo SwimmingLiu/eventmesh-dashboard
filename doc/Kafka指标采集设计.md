@@ -23,6 +23,114 @@
 
 代码按职责分为三部分：`gather/jmx` 提供与 Kafka 无关的 JMX 连接能力，`gather/kafka/metrics` 保存指标定义和采集结果模型，`gather/kafka/collector` 保存 Kafka 数据源、采集编排和维度计算。Collector 内部实现保持包内可见，对外只暴露总采集入口、JMX Endpoint 和结果模型。
 
+Dashboard 的接入层复用已有的 Report、Collect 和 SDK 管理机制。`IotDBKafkaMetricModule` 封装 Kafka 表初始化、指标写入、查询和采集任务创建，`IotDBReportEngine` 只通过通用 module registry 分发查询并提供 `ManagedCollect`。`ReportHandlerManage` 把这些任务注册到 `CollectManage`，不读取 Kafka store；`CollectManage` 只负责通用任务的注册、替换、调度和关闭，也不依赖 Kafka 类型。Kafka 查询必须同时提供 `organizationId` 和 `clustersId`，而且该组合必须存在于服务端 `kafkaCollectConfigList` 中，避免请求读取未授权的组织或集群时序数据。
+
+Kafka Admin 客户端由 `SDKManage` 创建和释放。`KafkaMetricCollect` 实现通用的 `ManagedCollect`，通过 `CreateKakfaConfig` 和 `KafkaAdminOperation` 获取 Admin 客户端。重新注册同一集群时，`CollectManage` 按组织和集群组成的确定性任务键替换 Collector，并关闭旧 Collector；每个 Collector 使用带随机实例段的 SDK key，旧任务关闭时只会删除自己持有的 Admin 客户端。JMX 继续使用仓库内通用的 `JmxConnector`，因为每个 Broker Endpoint 每轮建立一次短连接，不进入长期 SDK 客户端缓存。Spring 销毁 `ReportHandlerManage` 时，会依次停止调度器、等待采集线程退出、关闭全部 `ManagedCollect`、释放 SDK 客户端及 IoTDB/MySQL 连接池。
+
+```mermaid
+flowchart LR
+    HTTP[ReportController] --> HM[ReportHandlerManage]
+    HM --> RE[ReportEngine]
+    RE --> MR[IoTDB Metric Module Registry]
+    MR --> KM[IotDBKafkaMetricModule]
+    KM --> QS[KafkaMetricQueryService]
+    QS --> DB[(IoTDB)]
+
+    KM --> MC[KafkaMetricCollect]
+    HM --> CM[CollectManage]
+    CM --> MC
+    MC --> SM[SDKManage]
+    SM --> AO[KafkaAdminOperation]
+    AO --> KA[Kafka AdminClient]
+    MC --> JC[JmxConnector]
+    MC --> KS[KafkaMetricStore]
+    KS --> DB
+```
+
+### 1.1 采集和存储流程
+
+启动时，`IotDBReportEngine` 创建 IoTDB 数据源，向 registry 注册 `IotDBKafkaMetricModule`，再由 module 初始化六个维度对应的表。`ReportHandlerManage` 随后调用 `ReportEngine.createCollects()`，把每个启用的 Kafka 配置转换为一个 `KafkaMetricCollect`，并交给 `CollectManage` 注册。Collector 构造 Kafka Admin 配置时，会把 `bootstrapServers` 和自定义 Admin 属性交给 `SDKManage`；`SDKManage` 通过 `KafkaAdminOperation` 创建并缓存受管 Admin 客户端。
+
+调度器每 5 秒调用一次 `CollectManage.request()`。每个 Collector 仍按自己的 `intervalMillis` 判断是否到期，并用原子状态避免同一集群重叠采集。到期后，`KafkaMetricPersistenceCoordinator` 使用受管 Admin 客户端和各 Broker JMX Endpoint 生成同一周期的 `KafkaMetricCollection`。`KafkaMetricRowMapper` 把六维结果转换成 IoTDB 行，`IotDBKafkaMetricStore` 再按表和字段形状分组，每 500 行执行一次 JDBC batch。任一环节抛出异常时，本周期不会伪装成写入成功；下一轮调度仍可继续执行。
+
+```mermaid
+sequenceDiagram
+    participant RH as ReportHandlerManage
+    participant RE as IotDBReportEngine
+    participant KM as IotDBKafkaMetricModule
+    participant CM as CollectManage
+    participant KC as KafkaMetricCollect
+    participant SM as SDKManage
+    participant KO as KafkaAdminOperation
+    participant KP as KafkaMetricPersistenceCoordinator
+    participant RM as KafkaMetricRowMapper
+    participant ST as IotDBKafkaMetricStore
+    participant DB as IoTDB
+
+    RH->>RE: init()
+    RE->>KM: 注册并 initialize()
+    KM->>ST: 初始化六维表结构
+    ST->>DB: CREATE TABLE IF NOT EXISTS
+    RH->>RE: createCollects(reportConfig)
+    RE->>KM: 为启用的 Kafka 配置创建采集器
+    KM->>KC: new KafkaMetricCollect(config, store)
+    KC->>SM: createClient(ADMIN, metadata, config)
+    SM->>KO: createClient(CreateKakfaConfig)
+    KO-->>SM: AdminClient
+    SM-->>KC: 受管 AdminClient
+    RH->>CM: registerManagedCollect(KC)
+
+    loop 调度触发，且 Collector 已到采集时间
+        CM->>KC: request()
+        KC->>KP: collectAndStore(组织、集群、Admin、JMX Endpoints)
+        KP->>KP: Admin + JMX 采集并生成六维指标
+        KP->>ST: write(KafkaMetricWriteBatch)
+        ST->>RM: map(batch)
+        RM-->>ST: 六维 IoTDB rows
+        ST->>ST: 按表和字段形状分组，每 500 行分批
+        ST->>DB: PreparedStatement.executeBatch()
+    end
+```
+
+### 1.2 ReportController 查询流程
+
+`reportBySingle` 直接把一个 `SingleGeneralReportDO` 交给 `ReportHandlerManage`；`reportByHome` 则先把 `reportNameList` 展开成多个单指标请求。进入引擎前，`ReportHandlerManage` 会识别 `kafkaDimension` 或 `kafka_` 前缀，并校验请求的 `organizationId + clustersId` 是否存在于服务端 `kafkaCollectConfigList`。校验通过后，各指标异步调用默认 `ReportEngine.query()`。
+
+`IotDBReportEngine` 通过 registry 判断请求是否属于 Kafka。Kafka 请求由 `IotDBKafkaMetricModule` 转给 `KafkaMetricQueryService`；后者只从六维指标目录解析表名和字段名，调用方不能直接拼接任意标识符。查询必须包含组织和集群，可选 Broker、Topic、Group、Partition、时间区间、排序、limit 和 offset。筛选值全部使用 `PreparedStatement` 参数，排序和分页经过白名单或范围校验。结果集按列标签转换为 `List<Map<String, Object>>`，最后由 `ReportHandlerManage` 等待各异步查询并按 `reportName` 汇总返回。
+
+```mermaid
+sequenceDiagram
+    actor UI as Dashboard UI
+    participant RC as ReportController
+    participant RH as ReportHandlerManage
+    participant RE as IotDBReportEngine
+    participant MR as Metric Module Registry
+    participant KM as IotDBKafkaMetricModule
+    participant QS as KafkaMetricQueryService
+    participant DB as IoTDB
+
+    UI->>RC: reportBySingle 或 reportByHome
+    alt reportByHome
+        RC->>RC: reportNameList 展开为多个 SingleGeneralReportDO
+    end
+    RC->>RH: queryResultIsMap(requests)
+    RH->>RH: 校验 organizationId + clustersId 授权范围
+    loop 每个指标请求
+        RH->>RE: query(report)，异步执行
+        RE->>MR: resolve(report)
+        MR-->>RE: IotDBKafkaMetricModule
+        RE->>KM: query(report)
+        KM->>QS: query(report)
+        QS->>QS: 解析维度和指标目录，校验筛选、排序及分页
+        QS->>DB: PreparedStatement + 绑定参数
+        DB-->>QS: ResultSet
+        QS-->>RH: List of row maps
+    end
+    RH->>RH: 等待 Future，按 reportName 汇总
+    RH-->>RC: Map of report results
+    RC-->>UI: 单指标列表或多指标 Map
+```
+
 ```mermaid
 flowchart LR
     A[Kafka AdminClient] --> C[采集周期上下文]
@@ -84,11 +192,14 @@ JMX/RMI 建连有两段：客户端先访问 Registry，再根据 Registry 返�
 ```mermaid
 sequenceDiagram
     participant S as Scheduler
+    participant M as SDKManage
     participant A as AdminClient
     participant J as JMX Adapter
     participant B as Kafka Broker
     participant D as Dimension Collectors
 
+    S->>M: 获取受管 Kafka ADMIN 客户端
+    M-->>S: AdminClient
     S->>A: 获取 Broker、Topic、Leader、Replica、ISR、offset、Group
     A-->>S: Admin 快照或失败明细
     loop 每个配置的 Broker Endpoint
@@ -102,7 +213,7 @@ sequenceDiagram
     S->>S: 健康评估并合并失败明细
 ```
 
-连接超时和请求超时必须分开。`jmx.remote.x.request.waiting.timeout` 只限制连接建立后的请求，不能限制 RMI Registry 建连。本实现把 `connect()` 放入守护线程并使用 Future 超时；超时后立即返回，清理动作异步执行，避免 `close()` 再次阻塞调用线程。正常连接仍由 try-with-resources 同步关闭。
+连接超时和请求超时必须分开。`jmx.remote.x.request.waiting.timeout` 只限制连接建立后的请求，不能限制 RMI Registry 建连。本实现使用共享的有界 daemon executor 执行 `connect()`，每个 Endpoint 同时只允许一个未完成的连接尝试，全局连接线程最多 8 个。连接超时后，请求线程立即返回；如果底层 RMI 忽略中断并在稍后完成，由原连接任务负责关闭刚建立的 connector，避免“先清理、后连上”的竞态。正常连接的 try-with-resources 关闭使用另一个有界 executor，队列饱和时通过调用方背压保证关闭任务不被丢弃。
 
 ### 3.3 MBean 读取规则
 
@@ -215,6 +326,15 @@ stateDiagram-v2
 
 验证环境不是 Mock：Kafka 4.5.0-SNAPSHOT KRaft 集群包含两个 Broker，KnowStreaming 3.4.0、Elasticsearch 和 JMX 均为本机真实服务。
 
+日常回归不依赖这些外部服务，可执行：
+
+```bash
+mvn -pl eventmesh-dashboard-core,eventmesh-dashboard-console \
+  -am -Dcheckstyle.skip=true test
+```
+
+默认测试会编译并执行现有单元测试，包括 ReportController 查询、IoTDB module 路由、store/row mapper、CollectManage 生命周期、SDKManage 替换语义和 JMX 资源上限测试，并在测试失败时终止构建。Console 的 Kafka/IoTDB 集成测试分别由 `-Dkafka.pipeline.integration=true` 和 `-Dkafka.iotdb.integration=true` 启用，未设置开关时自行跳过；连接地址和凭据通过同名前缀的系统属性覆盖默认值。Core 的 Kafka E2E 测试通过现有 profile 显式运行。命令显式跳过仓库中与本模块无关的历史 Checkstyle 问题；本次涉及的 Java 文件仍需单独通过定向 Checkstyle。下面的真实环境结果来自对应版本和拓扑的一次完整演练，不属于日常单元测试的自动断言；重新验证时需要按表中拓扑启动 Kafka、JMX、IoTDB 和工作负载，再运行 `KafkaMetricPipelineIntegrationTest` 及 Core 的 Kafka E2E 测试。
+
 | 项目 | 配置 |
 | --- | --- |
 | Broker 1 | Kafka `localhost:9092`，JMX `192.168.3.234:9999` |
@@ -257,4 +377,4 @@ KnowStreaming 的 Cluster `PartitionURP=0`、`PartitionNoLeader=0`、`LeaderMess
 9. Kafka 升级时重新检查 MBean 是否存在、属性类型和 ObjectName 标签。
 10. 对兼容值建立单独展示说明，避免把“不支持”解释为“业务值为 0”。
 
-这套结构把变化隔离在正确位置：Kafka 版本差异留在数据源和指标目录，聚合公式留在维度 Collector，调度器只处理一次采集周期。新增来源不会改写六个领域边界，新增指标也能明确回答“属于哪个维度、从哪里来、缺失时代表什么”。
+这套结构把 Kafka 版本差异留在数据源和指标目录，把聚合公式留在维度 Collector，把客户端生命周期交给 `SDKManage`，把任务生命周期交给 `CollectManage`。`ReportController` 的查询统一进入 `ReportEngine`，Kafka 的 schema、store、query 和 collector factory 则保留在同一个 IoTDB metric module 中。新增指标仍需明确所属维度、数据来源和缺失语义；新增存储指标域时，可以注册新的 IoTDB metric module，而不必向 `ReportHandlerManage` 或 `CollectManage` 增加专用分支。

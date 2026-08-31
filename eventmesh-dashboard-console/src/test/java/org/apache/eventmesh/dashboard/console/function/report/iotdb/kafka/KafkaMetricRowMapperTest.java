@@ -17,6 +17,7 @@
 
 package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
 
+import org.apache.eventmesh.dashboard.console.function.report.collect.kafka.KafkaMetricWriteBatch;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.BrokerMetric;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.ClusterMetric;
 import org.apache.eventmesh.dashboard.core.gather.kafka.metrics.GroupMetric;
@@ -32,8 +33,8 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 public class KafkaMetricRowMapperTest {
 
@@ -57,7 +58,7 @@ public class KafkaMetricRowMapperTest {
 
         List<KafkaMetricRow> rows = new KafkaMetricRowMapper().map(batch);
 
-        Assert.assertEquals(9, rows.size());
+        Assertions.assertEquals(9, rows.size());
         assertField(rows, KafkaIotDBSchema.CLUSTER, "bytes_in", 12.5D);
         assertField(rows, KafkaIotDBSchema.BROKER, "log_size", 100L);
         assertField(rows, KafkaIotDBSchema.TOPIC, "messages", 9L);
@@ -67,13 +68,13 @@ public class KafkaMetricRowMapperTest {
         assertField(rows, KafkaIotDBSchema.REPLICA, "in_sync", 1L);
         assertField(rows, KafkaIotDBSchema.COLLECTION_RUN, "status", "PARTIAL");
         KafkaMetricRow failure = row(rows, KafkaIotDBSchema.COLLECTION_FAILURE);
-        Assert.assertEquals("JmxConnection", failure.fields().get("metric_name"));
-        Assert.assertEquals("orders", row(rows, KafkaIotDBSchema.GROUP_PARTITION).tags().get("topic"));
+        Assertions.assertEquals("JmxConnection", failure.fields().get("metric_name"));
+        Assertions.assertEquals("orders", row(rows, KafkaIotDBSchema.GROUP_PARTITION).tags().get("topic"));
     }
 
     private void assertField(List<KafkaMetricRow> rows, KafkaIotDBSchema.TableDefinition table, String field,
         Object expected) {
-        Assert.assertEquals(expected, row(rows, table).fields().get(field));
+        Assertions.assertEquals(expected, row(rows, table).fields().get(field));
     }
 
     private KafkaMetricRow row(List<KafkaMetricRow> rows, KafkaIotDBSchema.TableDefinition table) {

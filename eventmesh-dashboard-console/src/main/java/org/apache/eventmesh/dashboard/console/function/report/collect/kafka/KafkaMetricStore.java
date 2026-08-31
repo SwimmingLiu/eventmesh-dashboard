@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka;
+package org.apache.eventmesh.dashboard.console.function.report.collect.kafka;
 
 /**
  * Stores one Kafka metric collection in the configured metrics repository.

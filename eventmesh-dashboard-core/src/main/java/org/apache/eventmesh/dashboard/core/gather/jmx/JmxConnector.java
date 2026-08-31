@@ -23,12 +23,17 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.management.AttributeNotFoundException;
 import javax.management.InstanceNotFoundException;
@@ -48,6 +53,18 @@ public final class JmxConnector implements AutoCloseable {
     private static final String REQUEST_WAITING_TIMEOUT = "jmx.remote.x.request.waiting.timeout";
 
     private static final String RMI_CLIENT_SOCKET_FACTORY = "com.sun.jndi.rmi.factory.socket";
+
+    private static final int MAX_CONNECT_THREADS = 8;
+
+    private static final ThreadPoolExecutor CONNECT_EXECUTOR = new ThreadPoolExecutor(0, MAX_CONNECT_THREADS,
+        60L, TimeUnit.SECONDS, new SynchronousQueue<>(), daemonThreadFactory("eventmesh-jmx-connect"),
+        new ThreadPoolExecutor.AbortPolicy());
+
+    private static final ThreadPoolExecutor CLOSE_EXECUTOR = new ThreadPoolExecutor(0, 2,
+        60L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(32), daemonThreadFactory("eventmesh-jmx-close"),
+        new ThreadPoolExecutor.CallerRunsPolicy());
+
+    private static final Map<String, ConnectAttempt> CONNECT_ATTEMPTS = new ConcurrentHashMap<>();
 
     private final javax.management.remote.JMXConnector remoteConnector;
 
@@ -75,49 +92,76 @@ public final class JmxConnector implements AutoCloseable {
         javax.management.remote.JMXConnector connector = JMXConnectorFactory.newJMXConnector(
             new JMXServiceURL(url), environment);
         try {
-            connectWithTimeout(connector, config.connectionTimeoutMillis());
+            connectWithTimeout(connector, config.connectionTimeoutMillis(), url);
             return new JmxConnector(connector, connector.getMBeanServerConnection());
+        } catch (AbandonedConnectionException ex) {
+            throw ex;
         } catch (IOException | RuntimeException ex) {
             closeAsync(connector);
             throw ex;
         }
     }
 
-    private static void connectWithTimeout(javax.management.remote.JMXConnector connector, long timeoutMillis)
-        throws IOException {
-        ExecutorService executor = Executors.newSingleThreadExecutor(task -> {
-            Thread thread = new Thread(task, "eventmesh-jmx-connect");
-            thread.setDaemon(true);
-            return thread;
-        });
-        Future<?> connectFuture = executor.submit(() -> {
-            connector.connect();
-            return null;
-        });
+    static void connectWithTimeout(javax.management.remote.JMXConnector connector, long timeoutMillis,
+        String endpoint) throws IOException {
+        ConnectAttempt connectAttempt = new ConnectAttempt();
+        if (CONNECT_ATTEMPTS.putIfAbsent(endpoint, connectAttempt) != null) {
+            throw new IOException("A previous JMX connection attempt is still running for " + endpoint);
+        }
+        Future<?> connectFuture;
+        try {
+            connectFuture = CONNECT_EXECUTOR.submit(() -> {
+                try {
+                    connector.connect();
+                    return null;
+                } finally {
+                    if (connectAttempt.finish()) {
+                        closeQuietly(connector);
+                    }
+                    releaseConnectAttempt(endpoint, connectAttempt);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            releaseConnectAttempt(endpoint, connectAttempt);
+            throw new IOException("JMX connection executor is at capacity", e);
+        }
         try {
             connectFuture.get(timeoutMillis, TimeUnit.MILLISECONDS);
         } catch (TimeoutException ex) {
-            connectFuture.cancel(true);
-            throw new IOException("JMX connection timed out after " + timeoutMillis + " ms", ex);
+            if (connectAttempt.abandon()) {
+                closeAsync(connector);
+            }
+            throw new AbandonedConnectionException("JMX connection timed out after " + timeoutMillis + " ms", ex);
         } catch (InterruptedException ex) {
-            connectFuture.cancel(true);
+            if (connectAttempt.abandon()) {
+                closeAsync(connector);
+            }
             Thread.currentThread().interrupt();
-            throw new IOException("Interrupted while connecting to JMX", ex);
+            throw new AbandonedConnectionException("Interrupted while connecting to JMX", ex);
         } catch (ExecutionException ex) {
             Throwable cause = ex.getCause();
             if (cause instanceof IOException) {
                 throw (IOException) cause;
             }
             throw new IOException("Unable to connect to JMX", cause);
-        } finally {
-            executor.shutdownNow();
         }
     }
 
+    private static void releaseConnectAttempt(String endpoint, ConnectAttempt attempt) {
+        CONNECT_ATTEMPTS.remove(endpoint, attempt);
+    }
+
     private static void closeAsync(javax.management.remote.JMXConnector connector) {
-        Thread thread = new Thread(() -> closeQuietly(connector), "eventmesh-jmx-close");
-        thread.setDaemon(true);
-        thread.start();
+        CLOSE_EXECUTOR.execute(() -> closeQuietly(connector));
+    }
+
+    private static ThreadFactory daemonThreadFactory(String prefix) {
+        AtomicInteger sequence = new AtomicInteger();
+        return task -> {
+            Thread thread = new Thread(task, prefix + '-' + sequence.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     private static void closeQuietly(javax.management.remote.JMXConnector connector) {
@@ -132,6 +176,19 @@ public final class JmxConnector implements AutoCloseable {
         return new JmxConnector(null, connection);
     }
 
+    static int pendingConnectionAttempts() {
+        return CONNECT_ATTEMPTS.size();
+    }
+
+    static int pendingConnectionAttempts(String host, int port) {
+        String endpoint = String.format(JMX_SERVICE_URL_FORMAT, host, port);
+        return CONNECT_ATTEMPTS.containsKey(endpoint) ? 1 : 0;
+    }
+
+    static int connectThreadCount() {
+        return CONNECT_EXECUTOR.getPoolSize();
+    }
+
     public Set<ObjectName> queryNames(ObjectName pattern) throws IOException {
         return mbeanConnection.queryNames(pattern, null);
     }
@@ -144,7 +201,39 @@ public final class JmxConnector implements AutoCloseable {
     @Override
     public void close() throws IOException {
         if (remoteConnector != null) {
-            remoteConnector.close();
+            closeAsync(remoteConnector);
+        }
+    }
+
+    private static final class ConnectAttempt {
+
+        private boolean abandoned;
+        private boolean finished;
+        private boolean cleanupClaimed;
+
+        private synchronized boolean abandon() {
+            abandoned = true;
+            return claimCleanup();
+        }
+
+        private synchronized boolean finish() {
+            finished = true;
+            return claimCleanup();
+        }
+
+        private boolean claimCleanup() {
+            if (abandoned && finished && !cleanupClaimed) {
+                cleanupClaimed = true;
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private static final class AbandonedConnectionException extends IOException {
+
+        private AbandonedConnectionException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

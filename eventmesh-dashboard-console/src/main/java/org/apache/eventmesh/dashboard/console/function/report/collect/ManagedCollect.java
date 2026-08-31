@@ -15,18 +15,17 @@
  * limitations under the License.
  */
 
-package org.apache.eventmesh.dashboard.core.function.SDK.config;
+package org.apache.eventmesh.dashboard.console.function.report.collect;
 
-import java.util.HashMap;
-import java.util.Map;
+/**
+ * A collection task whose scheduling and lifecycle are owned by {@link CollectManage}.
+ */
+public interface ManagedCollect extends Collect, AutoCloseable {
 
-import lombok.Data;
-import lombok.EqualsAndHashCode;
+    String key();
 
-@Data
-@EqualsAndHashCode(callSuper = true)
-public class CreateKakfaConfig extends AbstractMultiCreateSDKConfig {
+    void request();
 
-    private Map<String, Object> adminProperties = new HashMap<>();
-
+    @Override
+    void close();
 }

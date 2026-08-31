@@ -21,8 +21,8 @@ import java.util.Locale;
 
 import javax.sql.DataSource;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 public class KafkaIotDBSchemaTest {
@@ -34,19 +34,19 @@ public class KafkaIotDBSchemaTest {
         String script = initializer.loadScript().toLowerCase(Locale.ROOT);
         String unquotedScript = script.replace("\"", "");
 
-        Assert.assertEquals(110, KafkaIotDBSchema.tables().stream().limit(7)
+        Assertions.assertEquals(110, KafkaIotDBSchema.tables().stream().limit(7)
             .mapToInt(table -> table.fields().size()).sum());
-        Assert.assertTrue(script.contains("\"cluster_id\" string tag"));
+        Assertions.assertTrue(script.contains("\"cluster_id\" string tag"));
         KafkaIotDBSchema.tables().forEach(table -> {
-            Assert.assertTrue(unquotedScript.contains("create table if not exists " + table.name()));
-            table.tags().forEach(tag -> Assert.assertTrue(unquotedScript.contains(tag + " string tag")));
+            Assertions.assertTrue(unquotedScript.contains("create table if not exists " + table.name()));
+            table.tags().forEach(tag -> Assertions.assertTrue(unquotedScript.contains(tag + " string tag")));
             table.attributes().forEach((name, type) ->
-                Assert.assertTrue(unquotedScript.contains(name + " " + type.sqlType().toLowerCase(Locale.ROOT)
+                Assertions.assertTrue(unquotedScript.contains(name + " " + type.sqlType().toLowerCase(Locale.ROOT)
                     + " attribute")));
             table.fields().forEach((name, type) ->
-                Assert.assertTrue(unquotedScript.contains(name + " " + type.sqlType().toLowerCase(Locale.ROOT)
+                Assertions.assertTrue(unquotedScript.contains(name + " " + type.sqlType().toLowerCase(Locale.ROOT)
                     + " field")));
         });
-        Assert.assertEquals(11, initializer.statements(script).size());
+        Assertions.assertEquals(11, initializer.statements(script).size());
     }
 }

@@ -19,11 +19,8 @@ package org.apache.eventmesh.dashboard.console.spring.support;
 
 import org.apache.eventmesh.dashboard.common.enums.ClusterType;
 import org.apache.eventmesh.dashboard.common.enums.DeployStatusType;
-import org.apache.eventmesh.dashboard.console.entity.cases.DeployScriptEntity;
-import org.apache.eventmesh.dashboard.console.entity.cases.ResourcesConfigEntity;
 import org.apache.eventmesh.dashboard.console.entity.cluster.ClusterEntity;
 import org.apache.eventmesh.dashboard.console.entity.cluster.RuntimeEntity;
-import org.apache.eventmesh.dashboard.console.entity.function.ConfigEntity;
 import org.apache.eventmesh.dashboard.console.service.cluster.ClusterRelationshipService;
 import org.apache.eventmesh.dashboard.console.service.cluster.ClusterService;
 import org.apache.eventmesh.dashboard.console.service.cluster.RuntimeService;
@@ -36,9 +33,7 @@ import org.apache.eventmesh.dashboard.core.function.SDK.SDKManage;
 
 import org.apache.commons.lang3.reflect.FieldUtils;
 
-import java.util.ArrayList;
-import java.util.List;
-
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -48,7 +43,6 @@ import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
 
 import io.fabric8.kubernetes.client.KubernetesClient;
-import io.micrometer.core.instrument.util.IOUtils;
 
 @RunWith(MockitoJUnitRunner.class)
 public class RuntimeDeployServiceTest {
@@ -111,6 +105,13 @@ public class RuntimeDeployServiceTest {
 
     }
 
+    @After
+    public void closeStaticMock() {
+        if (sdkManageMockedStatic != null) {
+            sdkManageMockedStatic.close();
+        }
+    }
+
 
     @Test
     public void test_CREATE_WAIT() throws IllegalAccessException {
@@ -121,29 +122,6 @@ public class RuntimeDeployServiceTest {
         ClusterEntity kubeClusterEntity = new ClusterEntity();
         kubeClusterEntity.setId(2L);
         Mockito.when(clusterService.queryRelationshipClusterByClusterIdAndType(Mockito.any())).thenReturn(kubeClusterEntity);
-
-        ResourcesConfigEntity resourcesConfigEntity = new ResourcesConfigEntity();
-        resourcesConfigEntity.setCpuNum(1F);
-        resourcesConfigEntity.setMemNum(2F);
-        resourcesConfigEntity.setDiskNum(3F);
-        Mockito.when(resourcesConfigService.queryResourcesById(Mockito.any())).thenReturn(resourcesConfigEntity);
-
-        DeployScriptEntity deployScriptEntity = new DeployScriptEntity();
-        deployScriptEntity.setId(1L);
-        String content = IOUtils.toString(RuntimeDeployServiceTest.class.getResourceAsStream("/kubernetes/EventMesh-runtime.yaml"));
-        deployScriptEntity.setContent(content);
-        Mockito.when(deployScriptService.queryById(Mockito.any())).thenReturn(deployScriptEntity);
-
-        Mockito.when(portService.getPorts(Mockito.any())).thenReturn(List.of(100 + "", 101 + "", 102 + "", 103 + ""));
-
-        List<ConfigEntity> configEntityList = new ArrayList<>();
-        for (int i = 1; i <= 30; i++) {
-            ConfigEntity configEntity = new ConfigEntity();
-            configEntity.setConfigName("config" + i);
-            configEntity.setConfigValue("config" + i);
-            configEntityList.add(configEntity);
-        }
-        Mockito.when(configService.queryByClusterAndInstanceId(Mockito.any())).thenReturn(configEntityList);
 
         runtimeEntity.setClusterType(ClusterType.EVENTMESH_RUNTIME);
         runtimeEntity.setDeployStatusType(DeployStatusType.CREATE_WAIT);

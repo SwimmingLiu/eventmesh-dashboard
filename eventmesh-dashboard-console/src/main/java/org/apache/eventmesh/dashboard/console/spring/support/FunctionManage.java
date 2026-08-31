@@ -101,7 +101,7 @@ public class FunctionManage {
         this.initQueueData();
     }
 
-    @Bean
+    @Bean(destroyMethod = "close")
     public ReportHandlerManage buildReportHandlerManage() {
         ReportHandlerManage reportHandlerManage = new ReportHandlerManage();
         reportHandlerManage.setReportConfig(functionConfig.getReportConfig());
