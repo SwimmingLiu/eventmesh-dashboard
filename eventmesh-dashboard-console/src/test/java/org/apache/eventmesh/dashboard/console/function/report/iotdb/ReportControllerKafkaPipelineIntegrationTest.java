@@ -41,6 +41,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.print;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -138,6 +139,7 @@ public class ReportControllerKafkaPipelineIntegrationTest {
                               "limit": 1
                             }
                             """.formatted(organizationId, clusterId, brokerId)))
+                    .andDo(print())
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$[0].organization_id").value(Long.toString(organizationId)))
                     .andExpect(jsonPath("$[0].cluster_id").value(Long.toString(clusterId)))
