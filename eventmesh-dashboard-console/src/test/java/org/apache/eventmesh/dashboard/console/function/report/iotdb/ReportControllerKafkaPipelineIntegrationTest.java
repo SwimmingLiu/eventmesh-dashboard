@@ -27,6 +27,9 @@ import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.IotDBK
 
 import org.apache.iotdb.jdbc.IoTDBDataSource;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
@@ -38,6 +41,7 @@ import org.junit.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -127,24 +131,33 @@ public class ReportControllerKafkaPipelineIntegrationTest {
             MockMvc mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
             Throwable queryFailure = null;
             try {
-                mockMvc.perform(post("/report/reportBySingle")
+                MvcResult result = mockMvc.perform(post("/report/reportByHome")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                             {
-                              "reportName": "kafka_broker_messages_in",
+                              "reportNameList": [
+                                "kafka_broker_log_size",
+                                "kafka_broker_messages_in"
+                              ],
                               "organizationId": %d,
-                              "clustersId": %d,
-                              "brokerId": "%d",
-                              "order": "desc",
-                              "limit": 1
+                              "clustersId": %d
                             }
-                            """.formatted(organizationId, clusterId, brokerId)))
+                            """.formatted(organizationId, clusterId)))
                     .andDo(print())
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$[0].organization_id").value(Long.toString(organizationId)))
-                    .andExpect(jsonPath("$[0].cluster_id").value(Long.toString(clusterId)))
-                    .andExpect(jsonPath("$[0].broker_id").value(Integer.toString(brokerId)))
-                    .andExpect(jsonPath("$[0].value").isNumber());
+                    .andExpect(jsonPath("$.kafka_broker_log_size[0].organization_id")
+                        .value(Long.toString(organizationId)))
+                    .andExpect(jsonPath("$.kafka_broker_log_size[0].cluster_id")
+                        .value(Long.toString(clusterId)))
+                    .andExpect(jsonPath("$.kafka_broker_log_size[0].broker_id")
+                        .value(Integer.toString(brokerId)))
+                    .andExpect(jsonPath("$.kafka_broker_log_size[0].value").isNumber())
+                    .andExpect(jsonPath("$.kafka_broker_messages_in[0].value").isNumber())
+                    .andReturn();
+                JsonNode response = new ObjectMapper().readTree(result.getResponse().getContentAsString());
+                long logSize = response.path("kafka_broker_log_size").path(0).path("value").asLong();
+                org.junit.Assert.assertTrue("Expected a positive Kafka Broker log size, got " + logSize,
+                    logSize > 0L);
             } catch (Throwable failure) {
                 queryFailure = failure;
                 throw failure;

@@ -114,7 +114,7 @@ public final class KafkaMetricQueryService {
             sql.append(", ").append(quote(tag));
         }
         sql.append(", cluster_name, ").append(quote(metric.field())).append(" AS value FROM ")
-            .append(metric.table().name()).append(" WHERE 1 = 1");
+            .append(metric.table().name()).append(" WHERE ").append(quote(metric.field())).append(" IS NOT NULL");
 
         List<Object> parameters = new ArrayList<>();
         addFilter(sql, parameters, "organization_id", report.getOrganizationId());

@@ -69,6 +69,7 @@ public class KafkaMetricQueryServiceTest {
         Mockito.verify(connection).prepareStatement(sql.capture());
         Assertions.assertTrue(sql.getValue().contains("FROM kafka_broker_metrics"));
         Assertions.assertTrue(sql.getValue().contains("\"bytes_in\" AS value"));
+        Assertions.assertTrue(sql.getValue().contains("WHERE \"bytes_in\" IS NOT NULL"));
         Assertions.assertTrue(sql.getValue().endsWith("ORDER BY time DESC LIMIT 50"));
         Mockito.verify(statement).setString(1, "7");
         Mockito.verify(statement).setString(2, "9");
