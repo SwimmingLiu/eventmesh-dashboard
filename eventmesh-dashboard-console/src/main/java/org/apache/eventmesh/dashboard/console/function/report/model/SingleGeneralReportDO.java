@@ -35,4 +35,18 @@ public class SingleGeneralReportDO extends GeneralReportDO {
 
     private Integer offset;
 
+    /** Kafka metric dimension: cluster, broker, topic, partition, group, or replica. */
+    private String kafkaDimension;
+
+    /** Kafka metric name, for example BytesIn. */
+    private String kafkaMetric;
+
+    private String brokerId;
+
+    private String topicName;
+
+    private String kafkaGroupId;
+
+    private Integer partitionId;
+
 }

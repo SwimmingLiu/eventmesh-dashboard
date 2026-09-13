@@ -17,11 +17,16 @@
 
 package org.apache.eventmesh.dashboard.core.function.SDK.config;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
 public class CreateKakfaConfig extends AbstractMultiCreateSDKConfig {
+
+    private Map<String, Object> adminProperties = new HashMap<>();
 
 }

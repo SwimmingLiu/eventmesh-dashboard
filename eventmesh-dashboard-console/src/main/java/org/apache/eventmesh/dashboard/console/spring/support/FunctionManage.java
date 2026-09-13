@@ -26,6 +26,7 @@ import org.apache.eventmesh.dashboard.console.entity.cluster.ClusterRelationship
 import org.apache.eventmesh.dashboard.console.entity.cluster.RuntimeEntity;
 import org.apache.eventmesh.dashboard.console.function.health.Health2Service;
 import org.apache.eventmesh.dashboard.console.function.report.ReportHandlerManage;
+import org.apache.eventmesh.dashboard.console.function.report.iotdb.kafka.KafkaReportService;
 import org.apache.eventmesh.dashboard.console.service.cluster.ClusterRelationshipService;
 import org.apache.eventmesh.dashboard.console.service.cluster.ClusterService;
 import org.apache.eventmesh.dashboard.console.service.cluster.RuntimeService;
@@ -92,6 +93,9 @@ public class FunctionManage {
     private List<DataMetadataHandler> dataMetadataHandlerList;
 
     @Autowired
+    private KafkaReportService kafkaReportService;
+
+    @Autowired
     private DBRemotingResultHook dbRemotingResultHook;
 
     @Value("${function.enabled:false}")
@@ -142,6 +146,7 @@ public class FunctionManage {
         if (!this.functionConfig.isEnabledSync()) {
             return;
         }
+        this.kafkaReportService.sync();
         LocalDateTime date = LocalDateTime.now();
         List<RuntimeEntity> runtimeEntityList = this.runtimeService.queryByUpdateTime(runtimeEntity);
         List<ClusterEntity> clusterEntityList = this.clusterService.queryByUpdateTime(clusterEntity);

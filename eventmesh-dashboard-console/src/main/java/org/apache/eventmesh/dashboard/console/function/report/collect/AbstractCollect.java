@@ -53,17 +53,26 @@ public abstract class AbstractCollect implements Collect {
 
     protected abstract void doCollect();
 
-    @Override
-    public void collect(int index, DataSyncHandlerWrapper dataSyncHandlerWrapper) {
-        log.info("collect start index {} , cluster type {}  cluster id {}  runtime id {}", index, clusterMetadata.getClusterType(),
-            clusterMetadata.getClusterType(), Objects.isNull(runtimeMetadata) ? "null" : runtimeMetadata.getId());
-        this.currentData();
-        this.current.setIndex(index);
-        this.doCollect();
-        dataSyncHandlerWrapper.sync(this.current);
-        this.current = null;
-        log.info("collect end index {} , cluster type {}  cluster id {}  runtime id {}", index, clusterMetadata.getClusterType(),
-            clusterMetadata.getClusterType(), Objects.isNull(runtimeMetadata) ? "null" : runtimeMetadata.getId());
+    public final synchronized void collect(int index, DataSyncHandlerWrapper dataSyncHandlerWrapper) {
+        Objects.requireNonNull(dataSyncHandlerWrapper, "dataSyncHandlerWrapper");
+        boolean retry = backup != null;
+        current = retry ? backup : createRestoreData();
+        backup = null;
+        current.setIndex(index);
+        if (!retry) {
+            try {
+                doCollect();
+            } catch (RuntimeException | Error exception) {
+                current = null;
+                dataSyncHandlerWrapper.failed(index);
+                throw exception;
+            }
+        }
+        try {
+            dataSyncHandlerWrapper.sync(current);
+        } finally {
+            current = null;
+        }
     }
 
     public synchronized void restore(RestoreData restoreData) {
@@ -85,7 +94,7 @@ public abstract class AbstractCollect implements Collect {
         }
         if (Objects.nonNull(this.runtimeMetadata) && data instanceof RuntimeId runtimeId) {
             runtimeId.setRuntimeId(this.runtimeMetadata.getId());
-            runtimeId.setRuntimeName(this.runtimeMetadata.getName());
+            runtimeId.setRuntimeName(this.runtimeMetadata.nodeUnique());
         }
         this.current.setData(data);
     }
@@ -96,15 +105,5 @@ public abstract class AbstractCollect implements Collect {
         restoreData.setCollectMetadata(this.collectMetadata);
         return restoreData;
     }
-
-    @SuppressWarnings("ReplaceNullCheck")
-    private synchronized void currentData() {
-        if (this.backup != null) {
-            this.current = this.backup;
-        } else {
-            this.current = this.createRestoreData();
-        }
-    }
-
 
 }

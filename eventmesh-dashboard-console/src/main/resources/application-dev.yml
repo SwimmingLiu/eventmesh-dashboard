@@ -59,7 +59,7 @@ decoration:
 function:
   enabled: true
   enabledHealth: false
-  enabledReport: false
+  enabledReport: true
   enabledSync: true
   includeSyncType:
     - TOPIC

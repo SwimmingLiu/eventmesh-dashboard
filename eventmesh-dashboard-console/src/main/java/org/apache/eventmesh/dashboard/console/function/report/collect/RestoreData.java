@@ -54,4 +54,8 @@ public class RestoreData {
         this.dataMap.clear();
         abstractCollect.restore(this);
     }
+
+    public void complete() {
+        this.dataMap.clear();
+    }
 }

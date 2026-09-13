@@ -30,13 +30,16 @@ import org.apache.commons.lang3.ArrayUtils;
 
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * SDK manager is a singleton to manage all SDK clients, it is a facade to create, delete and get a client.
@@ -77,6 +80,7 @@ public class SDKManage {
      * @see CreateSDKConfig#getUniqueKey()
      */
     private final Map<String, ClientWrapper> clientMap = new ConcurrentHashMap<>();
+    private final Map<String, ClientLock> clientLocks = new ConcurrentHashMap<>();
     private final Map<String, Map<Class<?>, AbstractClientInfo<Object>>> stringMapConcurrentHashMap = new ConcurrentHashMap<>();
 
     private SDKManage() {
@@ -152,6 +156,9 @@ public class SDKManage {
      */
     public <T> T createClient(SDKTypeEnum sdkTypeEnum, BaseSyncBase baseSyncBase, CreateSDKConfig config, ClusterType clusterType) {
 
+        if (isKafka(clusterType)) {
+            return createKafkaClient(sdkTypeEnum, baseSyncBase, config, clusterType);
+        }
         try {
 
             SDKMetadataWrapper sdkMetadataWrapper = CLUSTER_TYPE_MAP_CONCURRENT_HASH_MAP.get(clusterType).get(sdkTypeEnum);
@@ -179,23 +186,184 @@ public class SDKManage {
         }
     }
 
+    private <T> T createKafkaClient(SDKTypeEnum sdkTypeEnum, BaseSyncBase baseSyncBase,
+        CreateSDKConfig config, ClusterType clusterType) {
+
+        try {
+            SDKMetadataWrapper sdkMetadataWrapper = sdkMetadataWrapper(clusterType, sdkTypeEnum);
+            if (Objects.equals(sdkTypeEnum, SDKTypeEnum.PRODUCER) || Objects.equals(sdkTypeEnum, SDKTypeEnum.CONSUMER)) {
+                return (T) sdkMetadataWrapper.abstractSDKOperation.createClient(config);
+            }
+            final String uniqueKey = baseSyncBase.getUnique();
+            ClientLock clientLock = acquireClientLock(uniqueKey);
+            try {
+                Object object = sdkMetadataWrapper.abstractSDKOperation.createClient(config);
+                ClientWrapper wrapper = new ClientWrapper();
+                wrapper.setConfig(config);
+                wrapper.setBaseSyncBase(baseSyncBase);
+                wrapper.getClientMap().put(sdkTypeEnum, object);
+                if (Objects.equals(SDKTypeEnum.ADMIN, sdkTypeEnum)) {
+                    wrapper.getClientMap().put(SDKTypeEnum.PING, object);
+                }
+                ClientWrapper previous = clientMap.get(uniqueKey);
+                if (previous != null) {
+                    try {
+                        closeAll(previous);
+                    } catch (RuntimeException e) {
+                        clientMap.remove(uniqueKey, previous);
+                        try {
+                            closeAll(wrapper);
+                        } catch (RuntimeException closeException) {
+                            e.addSuppressed(closeException);
+                        }
+                        throw e;
+                    }
+                }
+                clientMap.put(uniqueKey, wrapper);
+                return (T) object;
+            } finally {
+                releaseClientLock(uniqueKey, clientLock);
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("create client error", e);
+        }
+    }
+
+
+    private boolean isKafka(ClusterType clusterType) {
+        return clusterType == ClusterType.STORAGE_KAFKA_BROKER || clusterType == ClusterType.STORAGE_KAFKA_RAFT;
+    }
 
     public void deleteClient(SDKTypeEnum sdkTypeEnum, String uniqueKey) {
-        if (Objects.isNull(sdkTypeEnum)) {
-            this.clientMap.remove(uniqueKey);
-            this.stringMapConcurrentHashMap.remove(uniqueKey);
-        } else {
-            this.clientMap.get(uniqueKey).getClientMap().put(sdkTypeEnum, null);
+        ClientWrapper wrapper = this.clientMap.get(uniqueKey);
+        if (wrapper != null && !isKafka(wrapper.getBaseSyncBase().getClusterType())) {
+            if (Objects.isNull(sdkTypeEnum)) {
+                this.clientMap.remove(uniqueKey);
+                this.stringMapConcurrentHashMap.remove(uniqueKey);
+            } else {
+                wrapper.getClientMap().put(sdkTypeEnum, null);
+            }
+            return;
+        }
+        this.deleteClient(sdkTypeEnum, uniqueKey, null);
+    }
+
+    public void deleteClient(SDKTypeEnum sdkTypeEnum, String uniqueKey, Object expectedClient) {
+        ClientLock clientLock = acquireClientLock(uniqueKey);
+        try {
+            ClientWrapper wrapper = this.clientMap.get(uniqueKey);
+            if (wrapper == null) {
+                return;
+            }
+            if (expectedClient != null && wrapper.getClientMap().values().stream()
+                .noneMatch(client -> client == expectedClient)) {
+                return;
+            }
+            if (Objects.isNull(sdkTypeEnum)) {
+                this.clientMap.remove(uniqueKey);
+                this.stringMapConcurrentHashMap.remove(uniqueKey);
+                closeAll(wrapper);
+                return;
+            }
+            Object client = wrapper.getClientMap().remove(sdkTypeEnum);
+            if (client == null) {
+                return;
+            }
+            wrapper.getClientMap().entrySet().removeIf(entry -> entry.getValue() == client);
+            boolean empty = wrapper.getClientMap().isEmpty();
+            try {
+                close(wrapper, sdkTypeEnum, client);
+            } finally {
+                if (empty) {
+                    this.clientMap.remove(uniqueKey, wrapper);
+                    this.stringMapConcurrentHashMap.remove(uniqueKey);
+                }
+            }
+        } finally {
+            releaseClientLock(uniqueKey, clientLock);
+        }
+    }
+
+    private ClientLock acquireClientLock(String uniqueKey) {
+        ClientLock clientLock = clientLocks.compute(uniqueKey, (key, existing) -> {
+            ClientLock result = existing == null ? new ClientLock() : existing;
+            result.retain();
+            return result;
+        });
+        clientLock.lock();
+        return clientLock;
+    }
+
+    private void releaseClientLock(String uniqueKey, ClientLock clientLock) {
+        clientLock.unlock();
+        clientLocks.computeIfPresent(uniqueKey, (key, current) -> {
+            if (current != clientLock) {
+                return current;
+            }
+            int users = clientLock.release();
+            return users == 0 && !clientMap.containsKey(uniqueKey) ? null : current;
+        });
+    }
+
+    private SDKMetadataWrapper sdkMetadataWrapper(ClusterType clusterType, SDKTypeEnum sdkTypeEnum) {
+        Map<SDKTypeEnum, SDKMetadataWrapper> operations = CLUSTER_TYPE_MAP_CONCURRENT_HASH_MAP.get(clusterType);
+        if (operations == null || operations.get(sdkTypeEnum) == null) {
+            throw new IllegalArgumentException(
+                "No SDK operation registered for clusterType=" + clusterType + ", sdkType=" + sdkTypeEnum);
+        }
+        return operations.get(sdkTypeEnum);
+    }
+
+    private void closeAll(ClientWrapper wrapper) {
+        Set<Object> closed = Collections.newSetFromMap(new IdentityHashMap<>());
+        RuntimeException failure = null;
+        for (Map.Entry<SDKTypeEnum, Object> entry : wrapper.getClientMap().entrySet()) {
+            if (entry.getValue() == null || !closed.add(entry.getValue())) {
+                continue;
+            }
+            try {
+                close(wrapper, entry.getKey(), entry.getValue());
+            } catch (RuntimeException e) {
+                if (failure == null) {
+                    failure = e;
+                } else {
+                    failure.addSuppressed(e);
+                }
+            }
+        }
+        wrapper.getClientMap().clear();
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void close(ClientWrapper wrapper, SDKTypeEnum sdkTypeEnum, Object client) {
+        try {
+            SDKMetadataWrapper metadata = sdkMetadataWrapper(wrapper.getBaseSyncBase().getClusterType(), sdkTypeEnum);
+            metadata.abstractSDKOperation.close(client);
+        } catch (Exception e) {
+            throw new RuntimeException("close client error", e);
         }
     }
 
     @SuppressWarnings("unchecked")
     public <T> T getClient(SDKTypeEnum clientTypeEnum, String uniqueKey) {
-        return (T) clientMap.get(uniqueKey).getClientMap().get(clientTypeEnum);
+        ClientLock clientLock = acquireClientLock(uniqueKey);
+        try {
+            ClientWrapper wrapper = clientMap.get(uniqueKey);
+            return wrapper == null ? null : (T) wrapper.getClientMap().get(clientTypeEnum);
+        } finally {
+            releaseClientLock(uniqueKey, clientLock);
+        }
     }
 
     public ClientWrapper getClientWrapper(String uniqueKey) {
         return clientMap.get(uniqueKey);
+    }
+
+    int managedClientLockCount() {
+        return clientLocks.size();
     }
 
     /**
@@ -240,5 +408,27 @@ public class SDKManage {
 
         private AbstractSDKOperation<Object, CreateSDKConfig> abstractSDKOperation;
 
+    }
+
+    private static final class ClientLock {
+
+        private final ReentrantLock lock = new ReentrantLock();
+        private final AtomicInteger users = new AtomicInteger();
+
+        private void retain() {
+            users.incrementAndGet();
+        }
+
+        private int release() {
+            return users.decrementAndGet();
+        }
+
+        private void lock() {
+            lock.lock();
+        }
+
+        private void unlock() {
+            lock.unlock();
+        }
     }
 }

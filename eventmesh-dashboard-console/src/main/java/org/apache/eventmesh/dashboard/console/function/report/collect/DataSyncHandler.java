@@ -17,169 +17,110 @@
 
 package org.apache.eventmesh.dashboard.console.function.report.collect;
 
-import org.apache.eventmesh.dashboard.console.function.report.ReportEngine;
-import org.apache.eventmesh.dashboard.console.function.report.collect.padding.PaddingService;
-import org.apache.eventmesh.dashboard.console.function.report.model.base.ClusterId;
 
-import java.time.LocalDateTime;
-import java.time.temporal.ChronoUnit;
-import java.util.AbstractList;
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.function.Consumer;
-
-import javax.validation.constraints.NotNull;
 
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.eventmesh.dashboard.console.function.report.collect.padding.PaddingService;
 
-
-@Setter
+/** Pads and persists completed collector batches independently, retaining failed batches for replay. */
 @Slf4j
 public class DataSyncHandler {
 
+
     private PaddingService paddingService;
 
-    private ReportEngine reportEngine;
-
+    @Setter
+    private Consumer<Map<Class<?>, List<Object>>> batchWriter;
 
     public DataSyncHandlerWrapper getDataSyncHandlerWrapper(int count) {
         return new DataSyncHandlerWrapper(count);
     }
 
-    /**
-     *  4000个 rocketmq broker 节点
-     */
-    public void padding(DataSyncHandlerWrapper dataSyncHandlerWrapper) {
-        Map<Class<?>, List<Object>> classCollectListMap = new HashMap<>();
-        dataSyncHandlerWrapper.restoreDataList.forEach((restoreData -> {
-            restoreData.getDataMap().forEach((key, value) -> {
-                classCollectListMap.computeIfAbsent(key, k -> new CollectList<>()).addAll(value);
-            });
-            restoreData.restore();
-        }));
-        // TODO 这是是否有性能问题
-        classCollectListMap.values().forEach(list -> list.forEach(value -> paddingService.padding((ClusterId) value)));
-        reportEngine.batchInsertByClass(classCollectListMap);
+    /** Preserves the existing entry point while each batch is claimed and persisted only once. */
+    public void padding(DataSyncHandlerWrapper wrapper) {
+        for (int index = 0; index < wrapper.batches.length(); index++) {
+            wrapper.persist(index);
+        }
     }
 
-    static class CollectList<T> extends AbstractList<T> {
-
-        private final List<Collection<? extends T>> datas = new ArrayList<>();
-
-        @Override
-        public void forEach(Consumer<? super T> action) {
-            this.datas.forEach((data) -> data.forEach(action));
-        }
-
-        @Override
-        public T get(int index) {
-            return null;
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public Iterator<T> iterator() {
-            return new CollectIterator<>((Iterator<List<T>>) this.datas);
-        }
-
-        @Override
-        public int size() {
-            return this.datas.size();
-        }
-
-        @Override
-        public boolean addAll(@NotNull Collection<? extends T> data) {
-            return this.datas.add(data);
-        }
-
-    }
-
-    static class CollectIterator<T> implements Iterator<T> {
-
-        private final Iterator<List<T>> listIterator;
-
-        private Iterator<T> iterator;
-
-        public CollectIterator(List<List<T>> datas) {
-            this(datas.iterator());
-        }
-
-        public CollectIterator(Iterator<List<T>> listIterator) {
-            this.listIterator = listIterator;
-            if (this.listIterator.hasNext()) {
-                this.iterator = listIterator.next().iterator();
+    private void persist(RestoreData batch) {
+        Map<Class<?>, List<Object>> samples = new LinkedHashMap<>();
+        batch.getDataMap().forEach((type, values) -> samples.put(type, new ArrayList<>(values)));
+        try {
+            if (!samples.isEmpty()) {
+                Objects.requireNonNull(batchWriter, "batchWriter").accept(samples);
             }
+            batch.complete();
+        } catch (RuntimeException | Error exception) {
+            batch.restore();
+            throw exception;
         }
-
-        @Override
-        public boolean hasNext() {
-            if (Objects.isNull(this.iterator)) {
-                return false;
-            }
-            if (this.iterator.hasNext()) {
-                return true;
-            }
-            if (listIterator.hasNext()) {
-                iterator = listIterator.next().iterator();
-                return true;
-            }
-            return false;
-        }
-
-        @Override
-        public T next() {
-            return iterator.next();
-        }
-
     }
 
     public class DataSyncHandlerWrapper {
 
-
-        final List<RestoreData> restoreDataList;
-        private final AtomicInteger atomicInteger;
-        private final LocalDateTime startTime = LocalDateTime.now();
-        private int index = 0;
-        private volatile boolean timeout = false;
+        private final AtomicReferenceArray<RestoreData> batches;
+        private final AtomicIntegerArray completed;
+        private final AtomicInteger nextIndex = new AtomicInteger();
+        private final AtomicInteger remaining;
 
         public DataSyncHandlerWrapper(int count) {
-            this.atomicInteger = new AtomicInteger(count);
-            this.restoreDataList = new ArrayList<>(count + count / 2);
+            if (count < 0) {
+                throw new IllegalArgumentException("Collector count cannot be negative");
+            }
+            batches = new AtomicReferenceArray<>(count);
+            completed = new AtomicIntegerArray(count);
+            remaining = new AtomicInteger(count);
         }
 
-        public void sync(RestoreData restoreData) {
-            if (this.timeout) {
-                log.error("DataSyncHandlerWrapper timeout, cluster id is {} cluster type is {}",
-                    restoreData.getCollectMetadata().getClusterId(), restoreData.getCollectMetadata().getClusterType());
+        public void sync(RestoreData batch) {
+            int index = batch.getIndex();
+            if (!batches.compareAndSet(index, null, batch)) {
+                throw new IllegalStateException("Collector batch index was submitted twice");
             }
-            // TODO 我赌，时间差，可见性到位了
-            restoreDataList.add(restoreData.getIndex(), restoreData);
-            if (this.atomicInteger.decrementAndGet() == 0) {
-                LocalDateTime now = LocalDateTime.now();
-                log.info("sync finished , count is {} start time is {}  end time is {} , time consuming is {} ", restoreDataList.size(), startTime,
-                    now,
-                    ChronoUnit.MILLENNIA.between(startTime, now));
-                padding(this);
+            persist(index);
+        }
+
+        private void persist(int index) {
+            RestoreData batch = batches.get(index);
+            if (batch != null && completed.compareAndSet(index, 0, 1)) {
+                try {
+                    DataSyncHandler.this.persist(batch);
+                } finally {
+                    remaining.decrementAndGet();
+                }
             }
         }
 
-        public void shutdown() {
-            if (this.atomicInteger.get() > 0) {
-                log.error(" There are still tasks that have not been executed yet , num is {}", atomicInteger.get());
-                this.timeout = true;
+        /** Signals an acquisition failure without delaying any other collector's completed batch. */
+        public void failed(int index) {
+            if (completed.compareAndSet(index, 0, 1)) {
+                remaining.decrementAndGet();
             }
         }
 
         public int getIndex() {
-            return this.index++;
+            int index = nextIndex.getAndIncrement();
+            if (index >= batches.length()) {
+                throw new IllegalStateException("More collectors than registered batch slots");
+            }
+            return index;
         }
 
+        public void shutdown() {
+            if (remaining.get() > 0) {
+                log.warn("Collectors have not completed: {}", remaining.get());
+            }
+        }
     }
 }

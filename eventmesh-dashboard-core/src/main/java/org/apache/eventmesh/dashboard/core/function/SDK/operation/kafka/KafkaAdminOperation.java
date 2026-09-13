@@ -25,23 +25,38 @@ import org.apache.eventmesh.dashboard.core.function.SDK.SDKMetadata;
 import org.apache.eventmesh.dashboard.core.function.SDK.SDKTypeEnum;
 import org.apache.eventmesh.dashboard.core.function.SDK.config.CreateKakfaConfig;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 
-import java.util.Properties;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
 
 @SDKMetadata(clusterType = {ClusterType.STORAGE_KAFKA_BROKER, ClusterType.STORAGE_KAFKA_RAFT}, remotingType = RemotingType.KAFKA, sdkTypeEnum = {
     SDKTypeEnum.ADMIN, SDKTypeEnum.PING})
 public class KafkaAdminOperation extends AbstractSDKOperation<AdminClient, CreateKakfaConfig> {
 
     @Override
-    public AdminClient createClient(CreateKakfaConfig clientConfig) throws Exception {
-        Properties props = new Properties();
-        AdminClient adminClient = AdminClient.create(props);
-        return adminClient;
+    public AdminClient createClient(CreateKakfaConfig clientConfig) {
+        Objects.requireNonNull(clientConfig, "clientConfig");
+        Map<String, Object> properties = new HashMap<>();
+        if (clientConfig.getAdminProperties() != null) {
+            properties.putAll(clientConfig.getAdminProperties());
+        }
+        String[] netAddresses = clientConfig.getNetAddresses();
+        if (!properties.containsKey(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG)
+            && netAddresses != null && netAddresses.length > 0) {
+            properties.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, String.join(",", netAddresses));
+        }
+        if (StringUtils.isBlank(Objects.toString(properties.get(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG), null))) {
+            throw new IllegalArgumentException("Kafka bootstrap servers must not be blank");
+        }
+        return AdminClient.create(properties);
     }
 
     @Override
-    public void close(AdminClient client) throws Exception {
+    public void close(AdminClient client) {
         client.close();
     }
 }

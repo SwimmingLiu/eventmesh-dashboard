@@ -35,9 +35,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -156,29 +154,30 @@ public class MetadataDataManage {
     }
 
     private void executeSql() {
-        try (Connection connection = dataSource.getConnection()) {
-            PreparedStatement preparedStatement = connection.prepareStatement(this.sql);
+        LocalDateTime queryTime = LocalDateTime.now();
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement preparedStatement = connection.prepareStatement(this.sql)) {
             for (int i = 1; i <= selectObjectCount; i++) {
                 preparedStatement.setObject(i, localDateTime);
             }
 
-            this.localDateTime = LocalDateTime.now();
             try (ResultSet re = preparedStatement.executeQuery()) {
-                if (re.next()) {
+                while (re.next()) {
                     NameAndId nameAndId = new NameAndId();
+                    nameAndId.setMetadataType(MetadataType.valueOf(re.getString("metadata_type")));
                     nameAndId.setId(re.getLong("id"));
                     nameAndId.setName(re.getString("name"));
                     nameAndId.setSuperId(re.getLong("super_id"));
                     nameAndId.setIsDelete(re.getInt("is_delete"));
                     nameAndId.setStatus(re.getLong("status"));
-                    nameAndId.setCreateTime(Instant.ofEpochMilli(re.getLong("create_time")).atZone(ZoneId.systemDefault()).toLocalDateTime());
-                    nameAndId.setUpdateTime(Instant.ofEpochMilli(re.getLong("update_time")).atZone(ZoneId.systemDefault()).toLocalDateTime());
+                    nameAndId.setCreateTime(re.getTimestamp("create_time").toLocalDateTime());
+                    nameAndId.setUpdateTime(re.getTimestamp("update_time").toLocalDateTime());
                     this.nameAndIdList.add(nameAndId);
                 }
             } catch (Exception e) {
                 log.error(e.getMessage(), e);
             }
-
+            this.localDateTime = queryTime;
         } catch (Exception e) {
             log.error(e.getMessage(), e);
         }
@@ -186,12 +185,8 @@ public class MetadataDataManage {
 
     public void handlerMetadata() {
         this.nameAndIdList.forEach((value) -> {
-            if (value.isDelete()) {
+            if (Objects.equals(value.getIsDelete(), 1) || Objects.equals(value.getStatus(), 0L)) {
                 nameAndIdMap.remove(value);
-            } else if (Objects.equals(value.getStatus(), 1L)) {
-                nameAndIdMap.remove(value);
-            } else if (Objects.equals(value.getCreateTime(), value.getUpdateTime())) {
-                nameAndIdMap.put(value, value);
             } else {
                 nameAndIdMap.put(value, value);
             }
@@ -229,7 +224,7 @@ public class MetadataDataManage {
         stringBuilder.append(sql).append("\r\n union all \r\n");
         sql = this.createSql(MetadataType.GROUP, "`group`", "cluster_id", "name");
         stringBuilder.append(sql).append("\r\n union all \r\n");
-        sql = this.createSql(MetadataType.TOPIC, "topic", "runtime_id", "topicName");
+        sql = this.createSql(MetadataType.TOPIC, "topic", "runtime_id", "topic_name");
         stringBuilder.append(sql);
 
         this.sql = stringBuilder.toString();
@@ -239,9 +234,18 @@ public class MetadataDataManage {
     public String createSql(MetadataType metadataType, String table, String superId, String name) {
         this.selectObjectCount++;
         String sql = """
-                select '{}' , id , {} , update_time,create_time,is_delete,status from {} where update_time > ?
+                select '{}' as metadata_type,
+                       id,
+                       {} as super_id,
+                       {} as name,
+                       update_time,
+                       create_time,
+                       is_delete,
+                       status
+                from {}
+                where update_time > ?
             """;
-        return MessageFormatter.arrayFormat(sql, List.of(metadataType, superId, table, name).toArray()).getMessage();
+        return MessageFormatter.arrayFormat(sql, List.of(metadataType, superId, name, table).toArray()).getMessage();
     }
 
     public DataMetadataHandler<BaseClusterIdBase> createDataMetadataHandler(MetadataType metadataType) {
@@ -280,7 +284,7 @@ public class MetadataDataManage {
 
         @Override
         public int hashCode() {
-            return metadataType.hashCode() + superId.hashCode() + name.hashCode();
+            return Objects.hash(this.metadataType, this.superId, this.name);
         }
 
         @Override
