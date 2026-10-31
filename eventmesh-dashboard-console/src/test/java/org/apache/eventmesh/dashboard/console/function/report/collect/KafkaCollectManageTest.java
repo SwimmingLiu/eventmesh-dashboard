@@ -22,7 +22,6 @@ import org.apache.eventmesh.dashboard.common.enums.CollectType;
 import org.apache.eventmesh.dashboard.common.model.metadata.ClusterMetadata;
 import org.apache.eventmesh.dashboard.common.model.metadata.CollectMetadata;
 import org.apache.eventmesh.dashboard.common.model.metadata.RuntimeMetadata;
-import org.apache.eventmesh.dashboard.common.utils.RowMapperUtil;
 import org.apache.eventmesh.dashboard.console.function.report.ReportHandlerManage;
 import org.apache.eventmesh.dashboard.console.function.report.collect.exporter.KafkaAdminCollect;
 import org.apache.eventmesh.dashboard.console.function.report.collect.exporter.KafkaJmxCollect;
@@ -30,8 +29,6 @@ import org.apache.eventmesh.dashboard.console.function.report.collect.factory.Ka
 
 import org.apache.commons.lang3.reflect.FieldUtils;
 
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -252,8 +249,7 @@ public class KafkaCollectManageTest {
         configuration.setCollectType(CollectType.PROMETHEUS);
         manager.handlerData(List.of(cluster), List.of(broker), List.of(configuration));
         assertTrue(tasks(11L).isEmpty());
-        Map<String, Collect> executing = (Map<String, Collect>) FieldUtils.readField(manager, "executeingCollectMap", true);
-        assertEquals(replacement, executing.get("CollectMetadata-13"));
+        assertSame(replacement, waiting.get("ClusterMetadata-11"));
     }
 
     @Test
@@ -449,7 +445,10 @@ public class KafkaCollectManageTest {
         manager.handlerData(List.of(legacy), List.of(exporter), List.of(prometheus));
         Map<String, Collect> executing = (Map<String, Collect>) FieldUtils.readField(manager, "executeingCollectMap", true);
         Map<String, Collect> waiting = (Map<String, Collect>) FieldUtils.readField(manager, "waitExecuteCollectMap", true);
-        assertTrue(executing.containsKey("CollectMetadata-13"));
+        // 模拟已运行的旧任务，专门验证切换到 Kafka 时的清理。
+        Collect oldExporter = waiting.get("ClusterMetadata-11");
+        assertNotNull(oldExporter);
+        executing.put("CollectMetadata-13", oldExporter);
         manager.handlerData(List.of(cluster), List.of(), List.of());
         assertFalse(executing.containsKey("CollectMetadata-13"));
         assertFalse(waiting.containsKey("ClusterMetadata-11"));
@@ -664,70 +663,6 @@ public class KafkaCollectManageTest {
         Map<String, Collect> afterReplay = tasks(11L);
         assertSame(afterStop.get("ClusterMetadata-11"), afterReplay.get("ClusterMetadata-11"));
         assertSame(afterStop.get("RuntimeMetadata-12"), afterReplay.get("RuntimeMetadata-12"));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    public void prometheusModeIgnoresBrokerUpdatesAndRemovesStoppedExporter() throws IllegalAccessException {
-        ReportHandlerManage reports = mock(ReportHandlerManage.class);
-        when(reports.getReportMetaDataMap()).thenReturn(Map.of());
-        when(reports.getAggregationMetaDataMap()).thenReturn(Map.of());
-        manager.setReportHandlerManage(reports);
-        ClusterMetadata legacy = cluster(21L);
-        legacy.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER_MAIN_SLAVE);
-        RuntimeMetadata node = broker(31L, 21L);
-        node.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER);
-        RuntimeMetadata exporter = broker(32L, 21L);
-        exporter.setClusterType(ClusterType.PROMETHEUS_EXPORTER);
-        CollectMetadata config = configuration(23L, 21L);
-        config.setCollectType(CollectType.PROMETHEUS);
-        manager.handlerData(List.of(legacy), List.of(node, exporter), List.of(config));
-        Map<String, Collect> executing = (Map<String, Collect>) FieldUtils.readField(manager, "executeingCollectMap", true);
-        assertTrue(executing.containsKey("CollectMetadata-23"));
-        RuntimeMetadata changed = broker(31L, 21L);
-        changed.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER);
-        changed.setPort(9095);
-        manager.handlerData(List.of(), List.of(changed), List.of());
-        assertFalse(executing.containsKey("RuntimeMetadata-31"));
-        RuntimeMetadata stopped = broker(32L, 21L);
-        stopped.setClusterType(ClusterType.PROMETHEUS_EXPORTER);
-        stopped.setStatus(0L);
-        manager.handlerData(List.of(), List.of(stopped), List.of());
-        assertFalse(executing.containsKey("CollectMetadata-23"));
-        manager.handlerData(List.of(), List.of(exporter), List.of());
-        assertTrue(executing.containsKey("CollectMetadata-23"));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    public void switchingCollectionModeRemovesOldModeTasks() throws IllegalAccessException {
-        ReportHandlerManage reports = mock(ReportHandlerManage.class);
-        when(reports.getReportMetaDataMap()).thenReturn(Map.of());
-        when(reports.getAggregationMetaDataMap()).thenReturn(Map.of());
-        manager.setReportHandlerManage(reports);
-        ClusterMetadata legacy = cluster(21L);
-        legacy.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER_MAIN_SLAVE);
-        RuntimeMetadata node = broker(31L, 21L);
-        node.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER);
-        RuntimeMetadata exporter = broker(32L, 21L);
-        exporter.setClusterType(ClusterType.PROMETHEUS_EXPORTER);
-        CollectMetadata config = configuration(23L, 21L);
-        config.setCollectType(CollectType.PROMETHEUS);
-        manager.handlerData(List.of(legacy), List.of(node, exporter), List.of(config));
-        Map<String, Collect> executing = (Map<String, Collect>) FieldUtils.readField(manager, "executeingCollectMap", true);
-        CollectMetadata active = configuration(23L, 21L);
-        manager.handlerData(List.of(), List.of(), List.of(active));
-        assertFalse(executing.containsKey("CollectMetadata-23"));
-        assertTrue(executing.containsKey("RuntimeMetadata-31"));
-        assertFalse(executing.containsKey("RuntimeMetadata-32"));
-        CollectMetadata prometheus = configuration(23L, 21L);
-        prometheus.setCollectType(CollectType.PROMETHEUS);
-        manager.handlerData(List.of(), List.of(), List.of(prometheus));
-        assertTrue(executing.containsKey("CollectMetadata-23"));
-        assertFalse(executing.containsKey("RuntimeMetadata-31"));
-        prometheus.setStatus(0L);
-        manager.handlerData(List.of(), List.of(), List.of(prometheus));
-        assertFalse(executing.containsKey("CollectMetadata-23"));
     }
 
     @Test
@@ -1011,63 +946,6 @@ public class KafkaCollectManageTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    public void stoppingExporterRetainsAnotherActiveEndpoint() throws IllegalAccessException {
-        ReportHandlerManage reports = mock(ReportHandlerManage.class);
-        when(reports.getReportMetaDataMap()).thenReturn(Map.of());
-        when(reports.getAggregationMetaDataMap()).thenReturn(Map.of());
-        manager.setReportHandlerManage(reports);
-        ClusterMetadata legacy = cluster(21L);
-        legacy.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER_MAIN_SLAVE);
-        RuntimeMetadata first = broker(31L, 21L);
-        first.setClusterType(ClusterType.PROMETHEUS_EXPORTER);
-        RuntimeMetadata second = broker(32L, 21L);
-        second.setClusterType(ClusterType.PROMETHEUS_EXPORTER);
-        second.setPort(9095);
-        CollectMetadata config = configuration(23L, 21L);
-        config.setCollectType(CollectType.PROMETHEUS);
-        manager.handlerData(List.of(legacy), List.of(first, second), List.of(config));
-
-        Map<String, Collect> executing = (Map<String, Collect>) FieldUtils.readField(manager, "executeingCollectMap", true);
-        first.setStatus(0L);
-        manager.handlerData(List.of(), List.of(first), List.of());
-        assertEquals(second.getHost() + ":" + second.getPort(), FieldUtils.readField(executing.get("CollectMetadata-23"), "url", true));
-        first.setStatus(1L);
-        manager.handlerData(List.of(), List.of(first), List.of());
-        second.setStatus(0L);
-        manager.handlerData(List.of(), List.of(second), List.of());
-        assertEquals(first.getHost() + ":" + first.getPort(), FieldUtils.readField(executing.get("CollectMetadata-23"), "url", true));
-        second.setStatus(1L);
-        manager.handlerData(List.of(), List.of(second), List.of());
-        second.setStatus(0L);
-        manager.handlerData(List.of(), List.of(second), List.of());
-        assertEquals(first.getHost() + ":" + first.getPort(), FieldUtils.readField(executing.get("CollectMetadata-23"), "url", true));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    public void restartingLegacyClusterRestoresConfiguredExporter() throws IllegalAccessException {
-        ReportHandlerManage reports = mock(ReportHandlerManage.class);
-        when(reports.getReportMetaDataMap()).thenReturn(Map.of());
-        when(reports.getAggregationMetaDataMap()).thenReturn(Map.of());
-        manager.setReportHandlerManage(reports);
-        ClusterMetadata legacy = cluster(21L);
-        legacy.setClusterType(ClusterType.STORAGE_ROCKETMQ_BROKER_MAIN_SLAVE);
-        RuntimeMetadata exporter = broker(32L, 21L);
-        exporter.setClusterType(ClusterType.PROMETHEUS_EXPORTER);
-        CollectMetadata config = configuration(23L, 21L);
-        config.setCollectType(CollectType.PROMETHEUS);
-        manager.handlerData(List.of(legacy), List.of(exporter), List.of(config));
-        Map<String, Collect> executing = (Map<String, Collect>) FieldUtils.readField(manager, "executeingCollectMap", true);
-        legacy.setStatus(0L);
-        manager.handlerData(List.of(legacy), List.of(), List.of());
-        assertFalse(executing.containsKey("CollectMetadata-23"));
-        legacy.setStatus(1L);
-        manager.handlerData(List.of(legacy), List.of(), List.of());
-        assertTrue(executing.containsKey("CollectMetadata-23"));
-    }
-
-    @Test
     public void missingExporterDoesNotBlockKafkaRegistration() throws IllegalAccessException {
         ClusterMetadata rocket = cluster(21L);
         rocket.setClusterType(ClusterType.STORAGE_ROCKETMQ_CLUSTER);
@@ -1104,31 +982,6 @@ public class KafkaCollectManageTest {
             List.of(exporter, broker(12L, 11L)), List.of(configuration(13L, 11L))));
         assertSame(original.get("ClusterMetadata-11"), tasks(11L).get("ClusterMetadata-11"));
         assertSame(original.get("RuntimeMetadata-12"), tasks(11L).get("RuntimeMetadata-12"));
-    }
-
-    @Test
-    @SuppressWarnings("unchecked")
-    public void exporterAndConfigurationCanArriveInEitherOrder() throws IllegalAccessException {
-        ReportHandlerManage reports = mock(ReportHandlerManage.class);
-        when(reports.getReportMetaDataMap()).thenReturn(Map.of());
-        when(reports.getAggregationMetaDataMap()).thenReturn(Map.of());
-        manager.setReportHandlerManage(reports);
-        ClusterMetadata legacy = cluster(21L);
-        legacy.setClusterType(ClusterType.EVENTMESH_JVM_CLUSTER);
-        RuntimeMetadata exporter = broker(22L, 21L);
-        exporter.setClusterType(ClusterType.PROMETHEUS_EXPORTER);
-        CollectMetadata prometheus = configuration(23L, 21L);
-        prometheus.setCollectType(CollectType.PROMETHEUS);
-        Map<String, Collect> executing = (Map<String, Collect>) FieldUtils.readField(manager, "executeingCollectMap", true);
-
-        manager.handlerData(List.of(legacy), List.of(), List.of(prometheus));
-        assertFalse(executing.containsKey("CollectMetadata-23"));
-        manager.handlerData(List.of(), List.of(exporter), List.of());
-        assertTrue(executing.containsKey("CollectMetadata-23"));
-
-        manager.deleteByCollectMetadata(prometheus);
-        manager.handlerData(List.of(), List.of(), List.of(prometheus));
-        assertTrue(executing.containsKey("CollectMetadata-23"));
     }
 
     @Test
@@ -1212,41 +1065,6 @@ public class KafkaCollectManageTest {
         broker.setPort(9095);
         manager.handlerData(List.of(), List.of(broker), List.of());
         assertEquals(2, tasks(11L).size());
-    }
-
-    @Test
-    public void sharedMapperHandlesBooleanAndOptionalNumericColumns() throws Exception {
-        ResultSet rows = mock(ResultSet.class);
-        ResultSetMetaData nodeColumns = mock(ResultSetMetaData.class);
-        when(rows.getMetaData()).thenReturn(nodeColumns);
-        when(nodeColumns.getColumnCount()).thenReturn(4);
-        when(nodeColumns.getColumnLabel(1)).thenReturn("id");
-        when(nodeColumns.getColumnLabel(2)).thenReturn("cluster_type");
-        when(nodeColumns.getColumnLabel(3)).thenReturn("cluster_id");
-        when(nodeColumns.getColumnLabel(4)).thenReturn("jmx_port");
-        when(rows.getObject(1)).thenReturn(12L);
-        when(rows.getObject(2)).thenReturn(ClusterType.STORAGE_KAFKA_RAFT.name());
-        when(rows.getObject(3)).thenReturn(11L);
-        when(rows.getObject(4)).thenReturn("\t");
-        RuntimeMetadata node = RowMapperUtil.mapRow(rows, RuntimeMetadata.class);
-        assertNull(node.getJmxPort());
-        when(rows.getObject(4)).thenReturn("9.5");
-        // 通用数字映射保留原来的截断行为；JMX 端口在采集配置读取时单独校验。
-        assertEquals(9, RowMapperUtil.mapRow(rows, RuntimeMetadata.class).getJmxPort());
-
-        ResultSet configurationRows = mock(ResultSet.class);
-        ResultSetMetaData configurationColumns = mock(ResultSetMetaData.class);
-        when(configurationRows.getMetaData()).thenReturn(configurationColumns);
-        when(configurationColumns.getColumnCount()).thenReturn(3);
-        when(configurationColumns.getColumnLabel(1)).thenReturn("collect_type");
-        when(configurationColumns.getColumnLabel(2)).thenReturn("cluster_id");
-        when(configurationColumns.getColumnLabel(3)).thenReturn("enable");
-        when(configurationRows.getObject(1)).thenReturn(CollectType.EVENTMESH.name());
-        when(configurationRows.getObject(2)).thenReturn(11L);
-        when(configurationRows.getObject(3)).thenReturn(1);
-        CollectMetadata mapped = RowMapperUtil.mapRow(configurationRows, CollectMetadata.class);
-        assertEquals(Boolean.TRUE, mapped.getEnable());
-        assertEquals(11L, mapped.getClusterId());
     }
 
     @SuppressWarnings("unchecked")

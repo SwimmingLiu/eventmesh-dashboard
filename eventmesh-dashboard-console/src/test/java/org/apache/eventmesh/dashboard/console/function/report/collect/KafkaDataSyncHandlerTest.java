@@ -54,7 +54,7 @@ import static org.mockito.Mockito.when;
 public class KafkaDataSyncHandlerTest {
 
     @Test
-    public void copiesSamplesBeforeReturningTheCollectorBuffer() {
+    public void writesAllSamplesAfterReturningTheCollectorBuffer() {
         ReportEngine engine = mock(ReportEngine.class);
         AtomicReference<Map<Class<?>, List<Object>>> written = new AtomicReference<>();
         doAnswer(invocation -> {
@@ -63,9 +63,14 @@ public class KafkaDataSyncHandlerTest {
         }).when(engine).batchInsertByClass(anyMap());
         KafkaDataSyncHandler handler = new KafkaDataSyncHandler(mock(PaddingService.class), engine);
         RestoreData result = result(7L);
+        KafkaClusterMetrics second = new KafkaClusterMetrics();
+        second.setValueBrokerCount(8L);
+        result.setData(second);
         handler.getDataSyncHandlerWrapper(1).sync(result);
         assertTrue(result.getDataMap().isEmpty());
+        assertEquals(2, written.get().get(KafkaClusterMetrics.class).size());
         assertEquals(7L, ((KafkaClusterMetrics) written.get().get(KafkaClusterMetrics.class).get(0)).getValueBrokerCount());
+        assertEquals(8L, ((KafkaClusterMetrics) written.get().get(KafkaClusterMetrics.class).get(1)).getValueBrokerCount());
     }
 
     @Test

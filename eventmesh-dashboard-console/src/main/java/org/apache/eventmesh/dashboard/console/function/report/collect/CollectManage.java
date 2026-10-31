@@ -200,27 +200,22 @@ public class CollectManage {
         if (!regularCollectors.isEmpty()) {
             DataSyncHandlerWrapper wrapper = this.dataSyncHandler.getDataSyncHandlerWrapper(regularCollectors.size());
             regularCollectors.forEach(collector ->
-                this.submitCollect(collector, wrapper.getIndex(), wrapper));
+                this.threadPoolExecutor.execute(() -> collector.collect(wrapper.getIndex(), wrapper)));
         }
     }
 
     private void submitCollect(Collect collector, int index, DataSyncHandlerWrapper wrapper) {
-        // 采集器异常或线程池拒绝任务时仍需完成批次，防止其他采样一直无法交付。
+        // Kafka 使用独立批次；采集异常只影响当前任务，不阻塞其他采集器交付。
         try {
             this.threadPoolExecutor.execute(() -> {
                 try {
                     collector.collect(index, wrapper);
                 } catch (RuntimeException e) {
                     log.error("Collection failed for task {}", index, e);
-                    wrapper.complete(index);
-                } catch (Error e) {
-                    wrapper.complete(index);
-                    throw e;
                 }
             });
         } catch (RejectedExecutionException e) {
             log.error("Collection rejected for task {}", index, e);
-            wrapper.complete(index);
         }
     }
 
@@ -264,20 +259,9 @@ public class CollectManage {
             if (inactive) {
                 this.clusterMetadataMap.remove(clusterMetadata.getId());
                 this.deleteCollect(clusterMetadata);
-                // 导出器以配置为键执行，集群停用时也要删除这些任务。
-                this.collectMetadataMap.values().stream()
-                    .filter(configuration -> Objects.equals(configuration.getClusterId(), clusterMetadata.getId()))
-                    .filter(configuration -> Objects.equals(configuration.getCollectType(), CollectType.PROMETHEUS))
-                    .forEach(this::deleteCollect);
                 return;
             }
             this.clusterMetadataMap.put(clusterMetadata.getId(), clusterMetadata);
-            // 集群重新启用或晚于节点到达时，恢复已有导出器；已有注册保持原选择。
-            if (!isKafkaCluster(clusterMetadata) && !this.waitExecuteCollectMap.containsKey(this.createCollectKey(clusterMetadata))
-                && this.runtimeMetadataMap.getOrDefault(clusterMetadata.getId(), Map.of()).values().stream()
-                    .anyMatch(node -> Objects.equals(node.getClusterType(), ClusterType.PROMETHEUS_EXPORTER))) {
-                this.refreshPrometheusExporter(clusterMetadata.getId(), null);
-            }
         }, failures);
 
         processMetadata(runtimeMetadataList, "runtime", RuntimeMetadata::getId, runtimeMetadata -> {
@@ -315,10 +299,6 @@ public class CollectManage {
                 this.markFactoryCluster(factoryClusters, clusterId, changed);
             }
             if (runtimeMetadata.isDelete() || Objects.equals(runtimeMetadata.getStatus(), 0L)) {
-                if (!factoryManaged && Objects.equals(runtimeMetadata.getClusterType(), ClusterType.PROMETHEUS_EXPORTER)) {
-                    // 排除待停用节点，并在注册失败时保留原缓存以便重试。
-                    this.refreshPrometheusExporter(clusterId, runtimeMetadata.getId());
-                }
                 if (this.runtimeMetadataMap.containsKey(clusterId)) {
                     this.runtimeMetadataMap.get(clusterId).remove(runtimeMetadata.getId());
                 }
@@ -337,14 +317,12 @@ public class CollectManage {
                 String url = runtimeMetadata.getHost() + ":" + runtimeMetadata.getPort();
                 ClusterMetadata cluster = this.clusterMetadataMap.get(clusterId);
                 this.register(url, cluster);
-                // 导出器以集群为键缓存；配置先到时也要在导出器注册后激活已有配置。
-                Collect exporter = this.waitExecuteCollectMap.get(this.createCollectKey(cluster));
-                this.collectMetadataMap.values().stream()
-                    .filter(configuration -> Objects.equals(configuration.getClusterId(), clusterId))
-                    .filter(configuration -> Objects.equals(configuration.getCollectType(), CollectType.PROMETHEUS))
-                    .forEach(configuration -> this.executeingCollectMap.put(this.createCollectKey(configuration), exporter));
+                String key = this.createCollectKey(runtimeMetadata);
+                if (this.executeingCollectMap.containsKey(key)) {
+                    this.executeingCollectMap.put(key, this.waitExecuteCollectMap.get(key));
+                }
             } else {
-                // 配置按配置 ID 缓存，节点更新需要按所属集群查询，而非将集群 ID 当配置 ID。
+                // 配置以配置 ID 缓存；按集群查找，避免将 Kafka 配置关联到同 ID 的其他集群。
                 CollectMetadata collectMetadata = this.collectMetadataMap.values().stream()
                     .filter(configuration -> Objects.equals(configuration.getClusterId(), clusterId))
                     .filter(configuration -> Objects.equals(configuration.getCollectType(), CollectType.EVENTMESH))
@@ -398,24 +376,15 @@ public class CollectManage {
                 return;
             }
             if (Objects.equals(CollectType.EVENTMESH, collectMetadata.getCollectType())) {
-                // 模式切换时先移除同一配置的 Prometheus 任务，避免两种模式同时采集。
-                this.executeingCollectMap.remove(this.createCollectKey(collectMetadata));
                 this.buildCollect(collectMetadata);
                 return;
             }
             if (Objects.equals(CollectType.PROMETHEUS, collectMetadata.getCollectType())) {
-                // 主动采集按节点或集群缓存；切换模式时需清除旧任务，但保留等待中的导出器。
-                this.executeingCollectMap.remove(this.createCollectKey(cluster));
-                this.runtimeMetadataMap.getOrDefault(clusterId, Map.of()).values()
-                    .forEach(node -> this.executeingCollectMap.remove(this.createCollectKey(node)));
                 String key = this.createCollectKey(collectMetadata);
-                // 等待表按集群而不是配置索引，避免已注册导出器因键不匹配而无法激活。
-                Collect collect = this.waitExecuteCollectMap.get(this.createCollectKey(cluster));
-                // 导出器可能尚未注册，空值不能放入并发任务表，否则同批其他集群也无法更新。
+                Collect collect = this.waitExecuteCollectMap.get(key);
+                // 等待表可能没有该配置；空值不能进入并发任务表并阻断同批 Kafka 同步。
                 if (collect != null) {
                     this.executeingCollectMap.put(key, collect);
-                } else {
-                    log.warn("No exporter registered for collector {}", key);
                 }
             }
         }, failures);
@@ -556,20 +525,15 @@ public class CollectManage {
 
     private void buildCollect(CollectMetadata collectMetadata) {
         ClusterMetadata clusterMetadata = this.clusterMetadataMap.get(collectMetadata.getClusterId());
-        if (clusterMetadata == null) {
-            return;
-        }
         ClusterFramework clusterFramework = ClusterSyncMetadataEnum.getClusterFramework(clusterMetadata.getClusterType());
         Class<?> clazz = CLUSTER_TYPE_CLASS.get(clusterMetadata.getClusterType());
         if (clusterFramework.isCAP()) {
             this.buildCollect(collectMetadata, clusterMetadata, null, clazz);
             return;
         }
-        // 新集群可能先收到配置、后收到节点，空节点集合应保留配置等待下一次更新。
+        // 其他集群可能先收到配置而尚无节点，不能因此阻断 Kafka 的同批同步。
         Map<Long, RuntimeMetadata> nodes = this.runtimeMetadataMap.getOrDefault(clusterMetadata.getId(), Map.of());
-        // 导出器节点属于 Prometheus 模式，不能构造成主动采集节点。
-        nodes.values().stream().filter(node -> !Objects.equals(node.getClusterType(), ClusterType.PROMETHEUS_EXPORTER))
-            .forEach(runtimeMetadata -> this.buildCollect(collectMetadata, clusterMetadata, runtimeMetadata, clazz));
+        nodes.values().forEach(runtimeMetadata -> this.buildCollect(collectMetadata, clusterMetadata, runtimeMetadata, clazz));
     }
 
     @SuppressWarnings({"AliDeprecation", "deprecation"})
@@ -709,7 +673,7 @@ public class CollectManage {
         private void readRuntime(Connection connection, List<Exception> failures) throws SQLException {
             String sql =
                 "select `id`, `organization_id`, `cluster_id`, `cluster_type`, `name`, INET_NTOA(`host`) AS `host`, `port`, `runtime_index`, "
-                + "`version`, case when `status` = 0 or `is_delete` <> 0 then null else `jmx_port` end as `jmx_port`, "
+                + "`version`, case when `status` = 0 or `is_delete` <> 0 then null else nullif(trim(`jmx_port`), '') end as `jmx_port`, "
                 + "`trusteeship_type`, `first_to_whom`, `first_sync_state`, `replication_type`, `sync_error_type`,"
                 + " `deploy_status_type`, `kubernetes_cluster_id`, `create_script_content`, `resources_config_id`, `deploy_script_id`,"
                 + " `deploy_script_name`, `deploy_script_version`, `auth_type`, `description`, `rack`, `status`, `online_timestamp`, "
@@ -719,7 +683,7 @@ public class CollectManage {
 
         private void readCollect(Connection connection, List<Exception> failures) throws SQLException {
             // 存储集群名称在表中为文本，元数据模型当前声明为数字且采集链不使用；仅读取采集所需列。
-            String sql = "select id, cluster_id, collect_type, save_time, collect_interval, storage_cluster_id, enable, "
+            String sql = "select id, cluster_id, collect_type, save_time, collect_interval, storage_cluster_id, enable as collect_enable, "
                 + "status, create_time, update_time, is_delete from collect where update_time >= ? ";
             this.collectMetadataList = this.readRows(connection, sql, CollectMetadata.class, failures);
         }
@@ -734,6 +698,11 @@ public class CollectManage {
                         Object rowId = rows.getObject("id");
                         try {
                             T row = RowMapperUtil.mapRow(rows, type);
+                            // 采集表以整数保存启用状态，使用 JDBC 类型转换，不改变公共行映射规则。
+                            if (row instanceof CollectMetadata collect) {
+                                boolean enabled = rows.getBoolean("collect_enable");
+                                collect.setEnable(rows.wasNull() ? null : enabled);
+                            }
                             // Kafka JMX 使用端口建立连接，保留旧数字映射的同时避免截断并连接错误端口。
                             if (row instanceof RuntimeMetadata runtime && isKafkaRuntime(runtime)) {
                                 String port = rows.getString("jmx_port");

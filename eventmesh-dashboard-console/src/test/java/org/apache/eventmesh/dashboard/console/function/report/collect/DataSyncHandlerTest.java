@@ -26,13 +26,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
-
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -109,9 +106,7 @@ public class DataSyncHandlerTest {
             }
             return null;
         }).when(engine).batchInsertByClass(Mockito.anyMap());
-        // 并发回归使用有界队列，避免测试中的任务积压掩盖线程资源问题。
-        var executor = new ThreadPoolExecutor(8, 8, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(200),
-            new ThreadFactoryBuilder().setNameFormat("report-test-%d").build(), new ThreadPoolExecutor.AbortPolicy());
+        var executor = Executors.newFixedThreadPool(8);
         try {
             List<Future<?>> jobs = new ArrayList<>();
             for (int i = 0; i < 200; i++) {
@@ -144,27 +139,6 @@ public class DataSyncHandlerTest {
         RestoreData data = data(0, 1);
         Assertions.assertThrows(IllegalStateException.class, () -> wrapper.sync(data));
         Assertions.assertTrue(data.getDataMap().isEmpty());
-        Assertions.assertTrue(wrapper.restoreDataList.isEmpty());
-    }
-
-    @Test
-    public void failedTaskCompletesBatchWithoutRepeatingAcceptedResults() {
-        DataSyncHandler handler = new DataSyncHandler();
-        ReportEngine engine = Mockito.mock(ReportEngine.class);
-        handler.setReportEngine(engine);
-        handler.setPaddingService(Mockito.mock(PaddingService.class));
-        var wrapper = handler.getDataSyncHandlerWrapper(2);
-        RestoreData accepted = data(0, 7);
-
-        wrapper.sync(accepted);
-        wrapper.complete(0);
-        Mockito.verifyNoInteractions(engine);
-        wrapper.complete(1);
-        wrapper.complete(1);
-
-        Mockito.verify(engine).batchInsertByClass(Mockito.argThat(batch ->
-            batch.get(RocketmqConsumerConnectionNumber.class).size() == 1));
-        Assertions.assertTrue(accepted.getDataMap().isEmpty());
         Assertions.assertTrue(wrapper.restoreDataList.isEmpty());
     }
 

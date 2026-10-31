@@ -21,6 +21,8 @@ import org.apache.eventmesh.dashboard.console.function.report.ReportEngine;
 import org.apache.eventmesh.dashboard.console.function.report.collect.padding.PaddingService;
 import org.apache.eventmesh.dashboard.console.function.report.iotdb.IotDBReportEngine;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,10 +36,17 @@ final class KafkaDataSyncHandler extends DataSyncHandler {
 
     @Override
     protected void write(ReportEngine engine, Map<Class<?>, List<Object>> samples) {
+        // 公共批次列表按采集器分组；Kafka 写入需要可迭代且大小为实际样本数的列表。
+        Map<Class<?>, List<Object>> values = new HashMap<>();
+        samples.forEach((type, grouped) -> {
+            List<Object> rows = new ArrayList<>();
+            grouped.forEach(rows::add);
+            values.put(type, rows);
+        });
         if (engine instanceof IotDBReportEngine iotdb) {
-            new KafkaReportWriter(iotdb).insert(samples);
+            new KafkaReportWriter(iotdb).insert(values);
         } else {
-            super.write(engine, samples);
+            super.write(engine, values);
         }
     }
 }
